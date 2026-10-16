@@ -124,6 +124,8 @@ public:
 
     // ---- time, from outside: wall time drives only external machinery ----
     void pump(std::uint64_t now_ms);
+    // The light round a game's frames need (live link, court, packets), each animation frame.
+    void tick_live(std::uint64_t now_ms);
 
     // ---- what the host is asked, and answers ----
     std::vector<StartAsk> take_starts();
@@ -428,6 +430,7 @@ private:
     std::map<sg::net::Digest, std::unique_ptr<sg::net::Integrity>> releases_;  // by committee
     std::vector<std::pair<std::string, Bytes>> release_in_;
     std::vector<std::pair<std::string, Bytes>> carry_in_;
+    void receive_live();
     struct EarlySignal {
         Key32 room{};
         Bytes box;

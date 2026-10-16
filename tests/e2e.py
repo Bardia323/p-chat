@@ -396,8 +396,8 @@ def run(args, serve, launch):
             open_app(E, link2)
             E.fill('[data-test=code]', 'abandon ability able about above absent')
             E.click('[data-test=pair]')
-            wait(A, "document.querySelector('[data-test=error]')?.textContent === 'Invite failed: possible interception'", 60,
-                 'the owner shows: Invite failed: possible interception')
+            wait(A, "document.querySelector('[data-test=error]')?.textContent === 'The six words did not match'", 60,
+                 'the owner shows: The six words did not match (the invite is cancelled)')
             check(A.evaluate('window.pchat.session.conversations().length') == 1, 'nothing was paired')
             e_ctx.close()
 
@@ -688,9 +688,19 @@ def run(args, serve, launch):
             A.screenshot(path=str(work / 'game.png'))
             A.click('[data-test=stop-game]')
             wait(F, "window.pchat.state.screen === 'chat'", 30, 'stopped: back to the chat for both')
+            # After a game, the chat open on both: what each says appears on the other's screen there and then.
+            wait(A, "window.pchat.state.screen === 'chat'", 30, 'the one who stopped is back in the chat')
+            F.evaluate(f"window.pchat.session.send('{conv}', 'after-game-AG1')")
+            wait(A, "Array.from(document.querySelectorAll('[data-test=theirs]')).some(e => e.textContent.includes('after-game-AG1'))", 30,
+                 'after the game, a message shows in the open chat, without leaving it')
+            A.evaluate(f"window.pchat.session.send('{conv}', 'after-game-AG2')")
+            wait(F, "Array.from(document.querySelectorAll('[data-test=theirs]')).some(e => e.textContent.includes('after-game-AG2'))", 30,
+                 'and the other way')
 
             # ---- the whiteboard: a stroke drawn reaches the other; one leads where both look ----
             for page in (A, F):
+                if not wait(page, "!!document.querySelector('[data-test=attach]')", 20, page.name + ' has its composer'):
+                    print('  ', page.name, page.evaluate("JSON.stringify({screen: window.pchat.state.screen, conv: window.pchat.state.conv, len: history.length, st: history.state, html: document.getElementById('app').className})"))
                 page.click('[data-test=attach]')
                 page.click('[data-test=board]')
             wait(A, "window.pchat.state.screen === 'board'", 20, 'the board opens')

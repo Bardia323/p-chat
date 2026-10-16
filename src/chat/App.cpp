@@ -622,22 +622,7 @@ void App::pump(std::uint64_t now_ms) {
     settle();
     if (live_) {
         live_->poll();
-        std::string p, channel;
-        Bytes bytes;
-        for (int n = 0; n < 4096 && live_->receive(p, channel, bytes); ++n) {
-            if (channel == "envelope") live_in_.push_back(std::move(bytes));
-            else if (channel == "blob") blobs_in_.emplace_back(p, std::move(bytes));
-            else if (channel == "call") call_chunk(p, bytes);
-            else if (channel == "callroot") call_root(p, bytes);
-            else if (channel == "callmap") call_map(p, bytes);
-            else if (channel == "callwant") call_want(p, bytes);
-            else if (channel == "callpick") call_pick(p, bytes);
-            else if (channel == "game") game_packet(p, bytes);
-            else if (channel == "board") board_packet(p, bytes);
-            else if (channel == "release" && release_in_.size() < 4096) release_in_.emplace_back(p, std::move(bytes));
-            else if (channel == "carry" && carry_in_.size() < 4096 && bytes.size() <= carry_frame_max)
-                carry_in_.emplace_back(p, std::move(bytes));
-        }
+        receive_live();
         handle_signals();
         // Signals that came before their conversation did: tried again, two minutes at most.
         for (auto it = early_signals_.begin(); it != early_signals_.end();) {
@@ -2224,6 +2209,38 @@ void App::join_group(Conversation& direct, const sg::net::Observation& from, con
 // ---- live ---------------------------------------------------------------------
 
 void App::set_live(Live* live) { live_ = live; }
+// What came on the live link, each to its own: envelopes, pieces, a call's
+// chunks, a game's and a board's packets, releases, carried frames.
+void App::receive_live() {
+    std::string p, channel;
+    Bytes bytes;
+    for (int n = 0; n < 4096 && live_->receive(p, channel, bytes); ++n) {
+        if (channel == "envelope") live_in_.push_back(std::move(bytes));
+        else if (channel == "blob") blobs_in_.emplace_back(p, std::move(bytes));
+        else if (channel == "call") call_chunk(p, bytes);
+        else if (channel == "callroot") call_root(p, bytes);
+        else if (channel == "callmap") call_map(p, bytes);
+        else if (channel == "callwant") call_want(p, bytes);
+        else if (channel == "callpick") call_pick(p, bytes);
+        else if (channel == "game") game_packet(p, bytes);
+        else if (channel == "board") board_packet(p, bytes);
+        else if (channel == "release" && release_in_.size() < 4096) release_in_.emplace_back(p, std::move(bytes));
+        else if (channel == "carry" && carry_in_.size() < 4096 && bytes.size() <= carry_frame_max)
+            carry_in_.emplace_back(p, std::move(bytes));
+    }
+}
+// Every frame while a game or a board is open: only what they need - the
+// link read, the court stepped, its packets out - so a player's own paddle
+// answers at once, never waiting on the session's slower round.
+void App::tick_live(std::uint64_t now_ms) {
+    now_ = std::max(now_, now_ms);
+    if (live_) {
+        live_->poll();
+        receive_live();
+    }
+    pump_games();
+    settle();
+}
 void App::connect_members(Conversation& c) {
     if (!live_ || c.removed || c.kind == Kind::Channel) return;
     for (const auto& m : c.members) {
@@ -3365,6 +3382,9 @@ std::vector<App::GameView> App::games() const {
             v.hits = court.params().get_or<std::int64_t>("hits", 0);
             const auto shown = g->prediction ? g->prediction->display(frame_time_) : court_frame(court);
             v.ball_x = shown[0], v.ball_y = shown[1], v.left_y = shown[4], v.right_y = shown[6];
+            // This player's own paddle as it is now, with every move made so
+            // far - never smoothed behind the hand that moves it.
+            if (g->prediction) (g->player == 0 ? v.left_y : v.right_y) = g->prediction->predicted()[g->player == 0 ? 4 : 6];
             if (g->prediction) v.lead = g->prediction->predicted_tick() - g->prediction->finalized_tick();
             v.sent = g->sent;
             v.received = g->received;

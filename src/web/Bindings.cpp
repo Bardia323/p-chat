@@ -125,6 +125,7 @@ public:
         return out;
     }
     void pump(double now) { guard([&] { app_->pump(std::uint64_t(now)); return 0; }); }
+    void tick_live(double now) { guard([&] { app_->tick_live(std::uint64_t(now)); return 0; }); }
 
     val take_starts() {
         val out = val::array();
@@ -878,6 +879,7 @@ EMSCRIPTEN_BINDINGS(sgchat) {
         .function("save", &WebApp::save)
         .function("takeDirty", &WebApp::take_dirty)
         .function("pump", &WebApp::pump)
+        .function("tickLive", &WebApp::tick_live)
         .function("takeStarts", &WebApp::take_starts)
         .function("started", &WebApp::started)
         .function("takeSigns", &WebApp::take_signs)

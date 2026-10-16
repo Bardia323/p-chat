@@ -1,5 +1,24 @@
 # Changelog
 
+## v1.5 (2026-10-16): back, and the screens that broke
+
+- Back works: each screen deeper is a step in the browser's history, so
+  Safari's swipe and Android's key come back; the Home Screen app goes back
+  with a swipe in from the left edge; every screen but Chats has ◀.
+- Table tennis answers at once: the court is stepped every frame on its own
+  light round, and your paddle is drawn where your hand has put it. Its
+  screen in the sleeve's look: two wide keys to hold, or drag on the court.
+- The whiteboard in the sleeve's look again. The chat's heading keeps its
+  keys on one row.
+- A chat after a game had the game's keys where its composer should be
+  (and could not be written in): fixed.
+- On an iPhone, a chat no longer drags the whole page: only the messages scroll.
+- Pairing: "Pair this phone" is no longer stuck grey after an earlier try
+  (after half a minute with no answer it asks again); a mistyped word says
+  "The six words did not match" and what to do.
+- Replacing a lost device: the phone asked to approve is told at once, and
+  its list flags the chat.
+
 ## v1.4 (2026-10-16): calls that sound right and look like p-chat
 
 - Call sound no longer drifts later and later: it is played a little ahead

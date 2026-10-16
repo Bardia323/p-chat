@@ -19,11 +19,18 @@ export class Court {
     addEventListener('keydown', this.keys);
     addEventListener('keyup', this.keys);
     // A finger on the court: the paddle goes toward it.
-    canvas.addEventListener('pointerdown', (e) => { this.finger = e; canvas.setPointerCapture(e.pointerId); });
+    canvas.addEventListener('pointerdown', (e) => { this.finger = e; try { canvas.setPointerCapture(e.pointerId); } catch { /* no live pointer */ } });
     canvas.addEventListener('pointermove', (e) => { if (this.finger) this.finger = e; });
     canvas.addEventListener('pointerup', () => { this.finger = null; this.steer(); });
-    this.timer = setInterval(() => this.s.pump(), 16);
-    const frame = () => { this.draw(); this.raf = requestAnimationFrame(frame); };
+    // Every frame: the court stepped (the light round - link, court, packets)
+    // and drawn at once, so this player's paddle answers the hand that frame;
+    // the session's own round goes on beside it, slower.
+    this.timer = setInterval(() => this.s.pump(), 250);
+    const frame = () => {
+      try { this.s.app.tickLive(Date.now()); } catch { /* the game is over */ }
+      this.draw();
+      this.raf = requestAnimationFrame(frame);
+    };
     this.raf = requestAnimationFrame(frame);
   }
   press(dir, on) { if (on) this.held.add(dir); else this.held.delete(dir); this.steer(); }
@@ -131,7 +138,7 @@ export class Board {
     return this.view;
   }
   down(e) {
-    this.canvas.setPointerCapture(e.pointerId);
+    try { this.canvas.setPointerCapture(e.pointerId); } catch { /* no live pointer */ }
     if (this.pan) { this.panFrom = { x: e.clientX, y: e.clientY, view: { ...this.view } }; return; }
     this.drawing = [this.toBoard(e)];
   }

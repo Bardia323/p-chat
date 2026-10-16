@@ -550,3 +550,40 @@ details.more .mono { word-break: break-all; }
 /* The Home Screen banner: the sleeve's yellow; Safari's share mark drawn inline. */
 .banner.install p { margin: 4px 0 8px; }
 .banner.install svg.inline { width: 17px; height: 17px; vertical-align: -3px; }
+
+/* A chat that waits on this phone (a device to approve), flagged on the list. */
+.spine .flag { display: inline-block; margin-top: 4px; padding: 2px 8px; border-radius: 8px; background: var(--yellow); color: var(--band-ink);
+  font: 700 11px/1.3 var(--sans); letter-spacing: .06em; text-transform: uppercase; }
+.spine .flag.red { background: var(--red); color: var(--script); }
+
+/* Table tennis: the court large in its frame; two wide keys under it, held to move. */
+main.game { flex: 1; min-height: 0; display: grid; align-content: center; justify-items: center; gap: 10px; padding: 14px 16px 10px; }
+main.game canvas.court { width: min(100%, calc((var(--view-h, 100dvh) - 250px) * 4 / 3)); }
+main.game .fine { margin: 0; }
+.pads { gap: 14px; padding-top: 14px; }
+.pad-key { flex: 1; height: 78px; display: grid; place-items: center; border: 3px solid var(--ink); border-radius: 18px; background: var(--paper);
+  color: var(--ink); box-shadow: var(--press); touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  transition: transform .05s, box-shadow .05s; }
+.pad-key svg { width: 36px; height: 36px; }
+.pad-key.held { transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: var(--pressed); background: var(--yellow); color: var(--band-ink); }
+
+/* While a chat, a call or a game fills the screen, the page does not move:
+   a drag scrolls the messages, and at their end goes no further. */
+html.still, html.still body { overflow: hidden; height: 100%; overscroll-behavior: none; }
+html.still body { position: fixed; inset: 0; }
+#app.fitted .tape { -webkit-overflow-scrolling: touch; overscroll-behavior-y: contain; }
+
+/* The whiteboard: the sheet as large as fits, square, in its frame; the colours under it; tools at the foot. */
+main.board { flex: 1; min-height: 0; display: grid; align-content: center; justify-items: center; gap: 14px; padding: 14px 16px 10px; }
+main.board canvas.sheet { width: min(100%, calc(var(--view-h, 100dvh) - 300px)); }
+main.board .swatches { margin: 0; justify-content: center; }
+.tools { justify-content: center; gap: 12px; padding-top: 14px; }
+.tool { min-width: 54px; height: 50px; padding: 0 14px; border: 3px solid var(--ink); border-radius: 14px; background: var(--paper); color: var(--ink);
+  font: 700 15px/1 var(--sans); letter-spacing: .06em; text-transform: uppercase; box-shadow: var(--press); }
+.tool.wide { flex: 1; max-width: 160px; }
+.tool:active { transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: var(--pressed); }
+.tool[aria-pressed=true] { background: var(--ink); color: var(--cream); transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: var(--pressed); }
+/* The chat's heading: its keys in a row after the name, never wrapped under it. */
+.chathead { grid-template-columns: auto minmax(0, 1fr); grid-auto-flow: column; grid-auto-columns: auto; }
+.chathead.callhead { grid-template-columns: 1fr; }
+main.board canvas.sheet { border-color: var(--ink); }

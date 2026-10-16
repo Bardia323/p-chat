@@ -206,6 +206,9 @@ const ui = {
     if (kind === 'pair_refused') return show('error', { kind: 'pair_refused', detail });
     if (conv) state.alerts.set(conv + ':' + kind, true);
     if (kind === 'invite_failed') return show('error', { kind: 'invite_failed' });
+    if (kind === 'recovery_approve' && !(state.screen === 'chat' && state.conv === conv))
+      toast(session.info(conv).name + ': a new device asks to replace a lost one. Open the chat to check it.');
+    if (kind === 'recovery_of_me') toast('Someone says this phone is lost. Open ' + session.info(conv).name + ' to refuse.');
     this.changed(conv);
   },
   paired(conv, n) {
@@ -214,6 +217,7 @@ const ui = {
   },
   pairing(status) {
     state.pairing = status;
+    if (status === 'asked') state.askedAt = Date.now();
     if (status === 'used') show('error', { kind: session.conversations().length ? 'invite_used' : 'unrecognized' });
     else if (state.screen === 'pair') renderPair();
     else if (state.screen === 'meet') renderMeet();
@@ -277,6 +281,53 @@ globalThis.visualViewport?.addEventListener('resize', fitToView);
 globalThis.visualViewport?.addEventListener('scroll', fitToView);
 fitToView();
 
+// Going back: each screen deeper than the one before is a step in the
+// browser's history, so its back (a swipe on an iPhone, Android's key, the
+// edge swipe of the Home Screen app) comes back here; a back key on screen
+// that goes to the screen before steps the history back too, so the two
+// never disagree. Pairing's screens replace each other (a finished pairing
+// is not gone back into), and a call is left only by hanging up.
+const PASSING = new Set(['pair', 'meet', 'paired', 'error', 'unrecognized', 'unsupported']);
+const steps = [];  // what the browser's history holds of p-chat, as it holds it
+let fromHistory = false, expectPop = 0;
+function stepTo(name) {
+  const entry = { screen: name, conv: state.conv ?? null };
+  const was = steps[steps.length - 1];
+  try {
+    if (was && steps.length > 1 && steps[steps.length - 2].screen === name && (steps[steps.length - 2].conv ?? null) === entry.conv) {
+      // Back to the screen before: the history steps back with it.
+      steps.pop();
+      expectPop++;
+      history.back();
+    } else if (!was || PASSING.has(was.screen) || PASSING.has(name) || (DEPTH[name] ?? 1) <= (DEPTH[was.screen] ?? 0)) {
+      if (was && (DEPTH[name] ?? 1) <= (DEPTH[was.screen] ?? 0) && !PASSING.has(was.screen)) { steps.length = 0; }
+      steps[Math.max(0, steps.length - 1)] = entry;
+      history.replaceState(entry, '');
+    } else {
+      steps.push(entry);
+      history.pushState(entry, '');
+    }
+  } catch { /* no history here */ }
+}
+addEventListener('popstate', (e) => {
+  if (expectPop) { expectPop--; return; }
+  if (state.screen === 'call') { try { history.pushState({ screen: 'call', conv: state.conv }, ''); } catch { /* none */ } return; }
+  steps.pop();
+  const to = e.state?.screen || 'contacts';
+  fromHistory = true;
+  try { show(to, e.state?.conv ? { conv: e.state.conv } : {}); } finally { fromHistory = false; }
+});
+// The Home Screen app has no browser around it: a swipe in from the left edge goes back.
+{
+  let from = null;
+  addEventListener('touchstart', (e) => { const t = e.touches[0]; from = t && t.clientX < 22 ? { x: t.clientX, y: t.clientY } : null; }, { passive: true });
+  addEventListener('touchend', (e) => {
+    const t = e.changedTouches[0];
+    if (from && t && t.clientX - from.x > 80 && Math.abs(t.clientY - from.y) < 60 && steps.length > 1) history.back();
+    from = null;
+  }, { passive: true });
+}
+
 function show(name, data = {}) {
   if (state.screen === 'chat' && name !== 'chat' && state.conv) session.leave(state.conv);
   if (state.screen === 'game' && name !== 'game') { liveCourt?.stop(); liveCourt = null; }
@@ -284,8 +335,12 @@ function show(name, data = {}) {
   const from = DEPTH[state.screen] ?? 0, to = DEPTH[name] ?? 1;
   if (name !== state.screen || data.conv !== undefined) entering = to >= from ? 'from-right' : 'from-left';
   Object.assign(state, { screen: name, ...data });
+  if (!fromHistory) stepTo(name);
   // A chat fills what can be seen and no more: its messages scroll inside it.
-  root.classList.toggle('fitted', name === 'chat' || name === 'call');
+  const fitted = name === 'chat' || name === 'call' || name === 'game' || name === 'board';
+  root.classList.toggle('fitted', fitted);
+  // The page itself held still meanwhile: only what is meant to scroll does (iPhone).
+  document.documentElement.classList.toggle('still', fitted);
   const screens = { unsupported, unrecognized, pair: renderPair, contacts: renderContacts, chat: () => renderChat(true),
     invite: renderInvite, meet: renderMeet, devices: renderDevices, paired: renderPaired, about: renderAbout, error: renderError, settings: renderSettings,
     newgroup: renderNewGroup, replace: renderReplace, call: renderCall, game: renderGame, board: renderBoard };
@@ -326,7 +381,12 @@ function renderPair() {
     state.pairing === 'asked' ? 'Asked. Waiting for the other phone to answer…' :
     state.pairing === 'offline' ? 'Can\'t connect. Trying again…' :
     state.pairing === 'working' ? 'Checking the words…' : '');
-  const go = h('button', { class: 'btn wide', 'data-test': 'pair', disabled: state.pairing === 'working' || state.pairing === 'asked' }, 'Pair this phone');
+  // Asked, and no answer for a while (the request lost on the way, the other
+  // phone away): it may be asked again.
+  const stale = state.pairing === 'asked' && Date.now() - (state.askedAt || 0) > 30e3;
+  if (state.pairing === 'asked' && !stale) setTimeout(() => state.screen === 'pair' && renderPair(), 31e3);
+  const go = h('button', { class: 'btn wide', 'data-test': 'pair', disabled: state.pairing === 'working' || (state.pairing === 'asked' && !stale) },
+    stale ? 'Ask again' : 'Pair this phone');
   go.onclick = async () => {
     let code;
     try { code = session.chat.normalizeCode(words.value); } catch { toast('That is not six words from the list. Check each word.'); return; }
@@ -337,7 +397,7 @@ function renderPair() {
     catch (e) { state.pairing = null; toast(e.message); renderPair(); }
   };
   const mine = recovering && state.pairing === 'asked' && session.app ? session.app.fingerprintOf(session.app.peer()) : null;
-  draw(head('Pair', { small: true }), h('main', {},
+  draw(head('Pair', { small: true, back: () => { state.pairing = null; show('contacts'); } }), h('main', {},
     h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, recovering ? 'In place of a lost device' : 'You were invited'),
       h('p', { class: 'caps light' }, 'By device ' + shortId(parsed.owner))),
     h('div', { class: 'pad' },
@@ -359,7 +419,14 @@ async function renderContacts() {
       h('span', { class: 'tag' }),
       h('span', {}, h('span', { class: 'name', dir: 'auto' }, info.name,
         info.kind === 1 ? h('span', { class: 'badge' }, 'group') : info.kind === 2 ? h('span', { class: 'badge' }, 'channel') : null), h('span', { class: 'last' },
-        info.removed ? 'This device was removed' : last ? (last.mine ? 'You: ' : '') + preview(last) : 'No messages yet')),
+        info.removed ? 'This device was removed' : last ? (last.mine ? 'You: ' : '') + preview(last) : 'No messages yet'),
+        // A replacement waiting on this phone: said on the list, not only inside the chat.
+        (() => {
+          const [role, , , , , , approved] = (info.recovering || '').split(' ');
+          if (role === 'me') return h('span', { class: 'flag red', 'data-test': 'flag-replaced' }, 'Says this phone is lost');
+          if (role && role !== 'mine' && approved !== 'approved') return h('span', { class: 'flag', 'data-test': 'flag-approve' }, 'Approve a device');
+          return null;
+        })()),
       info.unread ? h('span', { class: 'count' + (info.unread > (lastUnread.get(id) || 0) ? ' bump' : ''), 'data-test': 'unread' }, String(info.unread)) : h('span', {}))));
     lastUnread.set(id, info.unread);
   }
@@ -560,7 +627,7 @@ async function renderChat(first) {
   // are new; the composer is the one already there - never focused, never
   // replaced - so the keyboard, what was typed and an open tray stay as they
   // were. Only what may have changed of it is said again.
-  const kept = drawnChat === id ? root.querySelector('.composer') : null;
+  const kept = drawnChat === id ? root.querySelector(`.composer[data-chat="${id}"]`) : null;
   const was = root.querySelector('.tape');
   const atEnd = !was || was.scrollHeight - was.scrollTop - was.clientHeight < 48;
   if (kept && root.querySelector('.chathead') && root.querySelector('#app > main')) {
@@ -575,8 +642,8 @@ async function renderChat(first) {
   } else {
     draw(chathead, body,
       info.kind === 2 && !info.member
-        ? h('div', { class: 'composer reader', 'data-test': 'read-only' }, h('p', { class: 'caps light' }, 'Only ' + (info.introduced || 'its publisher') + ' posts here'))
-        : h('div', { class: 'composer' }, stickers, tray, attach, input, key));
+        ? h('div', { class: 'composer reader', 'data-test': 'read-only', 'data-chat': id }, h('p', { class: 'caps light' }, 'Only ' + (info.introduced || 'its publisher') + ' posts here'))
+        : h('div', { class: 'composer', 'data-chat': id }, stickers, tray, attach, input, key));
     grow();
   }
   drawnChat = id;
@@ -745,7 +812,7 @@ function renderMeet() {
   let d;
   try { d = session.inPersonInvite(state.meet); } catch { return show('error', { kind: 'bad_link' }); }
   if (state.meetAsked && !state.meetCode) {
-    draw(head('Pair', { small: true }), h('main', {},
+    draw(head('Pair', { small: true, back: () => { state.meetAsked = false; show('contacts'); } }), h('main', {},
       h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Pairing'), h('p', { class: 'caps light' }, 'By device ' + shortId(d.parsed.owner))),
       h('div', { class: 'pad' }, h('p', { class: 'fine', 'data-test': 'pair-status' },
         state.pairing === 'offline' ? 'Can\'t connect. Trying again…' : 'Asked. Waiting for their phone…'))));
@@ -757,7 +824,7 @@ function renderMeet() {
     qr.make();
     const status = state.pairing === 'asked' ? 'Asked. Waiting for their phone…' : state.pairing === 'offline' ? 'The phones could not join. Try again side by side.'
       : 'Waiting for them to scan it…';
-    draw(head('In person', { small: true }), h('main', {},
+    draw(head('In person', { small: true, back: () => { session.endPairing(); state.meetCode = null; show('contacts'); } }), h('main', {},
       h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Show them this code'), h('p', { class: 'caps light' }, 'Their phone scans it')),
       h('div', { class: 'pad' }, h('img', { class: 'qr', alt: 'Your answer as a code', src: qr.createDataURL(8, 0), 'data-test': 'answer-qr', 'data-code': state.meetCode }),
         h('div', { class: 'row' }, h('button', { class: 'btn light', 'data-test': 'copy-answer', onclick: async () => {
@@ -795,6 +862,7 @@ async function scanned() {
   scanQR('Scan the code on their phone', (text) => {
     const at = text.indexOf('#');
     const frag = at >= 0 ? text.slice(at + 1) : '';
+    state.pairing = null;
     if (frag.startsWith('d1.')) return show('meet', { meet: frag, meetCode: null, meetAsked: false });
     if (frag.startsWith('v1.')) { invite = frag; return show('pair'); }
     toast('That is not a p-chat code.');
@@ -852,7 +920,7 @@ function renderPaired() {
     show('chat', { conv });
   };
   call.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
-  draw(head('Paired', { small: true }), h('main', {},
+  draw(head('Paired', { small: true, back: go }), h('main', {},
     h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Paired')),
     h('div', { class: 'pad' },
       naming ? h('label', { class: 'field' }, h('span', {}, 'What do you call them?'), call) : null,
@@ -1090,16 +1158,24 @@ function renderGame() {
   const id = state.conv, game = state.game;
   const info = session.info(id);
   const canvas = h('canvas', { class: 'court', width: 800, height: 600, 'data-test': 'court', 'aria-label': 'The court' });
+  // Two wide keys under the court, held to move: the paddle goes while one is held.
   const hold = (dir) => {
-    const b = h('button', { class: 'deck', 'data-test': dir > 0 ? 'up' : 'down', 'aria-label': dir > 0 ? 'Up' : 'Down' }, dir > 0 ? '▲' : '▼');
-    for (const [ev, on] of [['pointerdown', true], ['pointerup', false], ['pointerleave', false]]) b.addEventListener(ev, () => liveCourt?.press(dir, on));
+    const b = h('button', { class: 'pad-key', 'data-test': dir > 0 ? 'up' : 'down', 'aria-label': dir > 0 ? 'Up' : 'Down' },
+      svg(dir > 0 ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 15l7-7 7 7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
+        : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9l7 7 7-7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>'));
+    const on = (v) => (e) => { e.preventDefault(); b.classList.toggle('held', v); liveCourt?.press(dir, v); };
+    b.addEventListener('pointerdown', (e) => { try { b.setPointerCapture(e.pointerId); } catch { /* no live pointer */ } on(true)(e); });
+    for (const ev of ['pointerup', 'pointercancel', 'lostpointercapture']) b.addEventListener(ev, on(false));
+    b.addEventListener('contextmenu', (e) => e.preventDefault());
     return b;
   };
-  draw(h('div', { class: 'callhead' }, h('h1', { dir: 'auto' }, 'Table tennis'), h('div', { class: 'sub' }, 'With ' + info.name + ' · W/S or ↑/↓ · the same court on both phones')),
-    h('main', { class: 'call game' }, canvas),
-    h('div', { class: 'decks' }, hold(1), hold(-1), h('button', { class: 'hang', 'data-test': 'stop-game', 'aria-label': 'Stop', onclick: () => {
-      session.app.leaveGame(game); session.pump(); show('chat', { conv: id });
-    } }, '■')));
+  const stop = () => { session.app.leaveGame(game); session.pump(); show('chat', { conv: id }); };
+  draw(h('div', { class: 'chathead' },
+      h('button', { class: 'back', 'data-test': 'stop-game', 'aria-label': 'Stop and go back', onclick: stop }, '◀'),
+      h('div', {}, h('h1', {}, 'Table tennis'), h('div', { class: 'sub' }, 'With ' + info.name)),
+      h('button', { class: 'label', onclick: stop }, 'Stop')),
+    h('main', { class: 'game' }, canvas, h('p', { class: 'fine' }, 'Hold a key, or drag on the court.')),
+    h('div', { class: 'composer pads' }, hold(1), hold(-1)));
   liveCourt?.stop();
   liveCourt = new Court(session, game, canvas);
   liveCourt.onover = () => { if (state.screen === 'game') show('chat', { conv: id }); };
@@ -1118,18 +1194,20 @@ async function renderBoard() {
     b.style.background = i === 0 ? 'var(--ink)' : c;
     return b;
   }));
-  const pan = h('button', { class: 'deck', 'aria-pressed': 'false', 'data-test': 'pan', onclick: () => {
+  const pan = h('button', { class: 'tool', 'aria-pressed': 'false', 'data-test': 'pan', onclick: () => {
     liveBoard.pan = !liveBoard.pan; pan.setAttribute('aria-pressed', String(liveBoard.pan));
   } }, 'Move');
-  const follow = h('button', { class: 'deck', 'aria-pressed': 'false', 'data-test': 'follow', onclick: () => {
+  const follow = h('button', { class: 'tool wide', 'aria-pressed': 'false', 'data-test': 'follow', onclick: () => {
     const on = follow.getAttribute('aria-pressed') !== 'true';
     liveBoard.follow(on); follow.setAttribute('aria-pressed', String(on));
   } }, 'Follow me');
-  draw(h('div', { class: 'callhead' }, h('button', { class: 'back', 'data-test': 'back', 'aria-label': 'Back', onclick: () => show('chat', { conv: id }) }, '◀'),
-    h('h1', { dir: 'auto' }, 'Board'), h('div', { class: 'sub' }, info.name + ' · every stroke is a signed message')),
-    h('main', { class: 'call board' }, canvas, colors),
-    h('div', { class: 'decks' }, pan, h('button', { class: 'deck', 'data-test': 'zoom-in', onclick: () => liveBoard.zoomBy(1.25) }, '+'),
-      h('button', { class: 'deck', 'data-test': 'zoom-out', onclick: () => liveBoard.zoomBy(0.8) }, '−'), follow));
+  // The chat's heading; the sheet large in the court's frame, the colours under
+  // it; at the foot, the composer's bar of tools that press in.
+  draw(h('div', { class: 'chathead' }, h('button', { class: 'back', 'data-test': 'back', 'aria-label': 'Back', onclick: () => show('chat', { conv: id }) }, '◀'),
+      h('div', {}, h('h1', {}, 'Whiteboard'), h('div', { class: 'sub' }, 'With ' + info.name))),
+    h('main', { class: 'board' }, canvas, colors),
+    h('div', { class: 'composer tools' }, pan, h('button', { class: 'tool', 'data-test': 'zoom-in', 'aria-label': 'Zoom in', onclick: () => liveBoard.zoomBy(1.25) }, '+'),
+      h('button', { class: 'tool', 'data-test': 'zoom-out', 'aria-label': 'Zoom out', onclick: () => liveBoard.zoomBy(0.8) }, '−'), follow));
   liveBoard?.stop();
   liveBoard = new Board(session, id, canvas, strokes, (peer) => speaker(peer));
   pick();
@@ -1157,7 +1235,7 @@ function renderReplace() {
 
 function renderError(data = state) {
   const texts = {
-    invite_failed: ['Stopped', 'Invite failed: possible interception', 'The six words did not match the link. Someone else may have tried to use it. The invite is cancelled; make a new one and say the words again.'],
+    invite_failed: ['Stopped', 'The six words did not match', 'Perhaps a word was mistyped - or someone else tried to use the link. This invite is cancelled: make a new one (or ask for one), and say the words again.'],
     invite_used: ['Used', 'This invite was already used', 'An invite works for one phone, once. Ask for a new one.'],
     unrecognized: ['Already used', 'This invite was already used.', 'Perhaps by this phone, before it lost its key. Ask for a new invite.'],
     pair_refused: ['Stopped', 'Pairing was refused', data.detail || ''],
@@ -1361,6 +1439,7 @@ addEventListener('hashchange', () => {
   if (!h.startsWith('d1.') && !h.startsWith('v1.')) return;
   history.replaceState(null, '', location.pathname + location.search);
   if (!session.chat) return;
+  state.pairing = null;
   if (h.startsWith('d1.')) show('meet', { meet: h, meetCode: null, meetAsked: false });
   else { invite = h; show('pair'); }
 });
