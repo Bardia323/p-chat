@@ -1,5 +1,10 @@
 # p-chat
 
+Live: **https://p-chat-21r.pages.dev** (Cloudflare Pages; release 1, bundle
+fingerprint `a7a9 948d 195d 889d 77ec 0b1a 3263 921a`). No relay is run for it
+yet: pair in person (each phone scans the other's code), or set your own
+relay in Settings → Advanced.
+
 Private phone-to-phone messages in a plain browser tab: no install, no
 account. You show a friend a QR code and tell them six words; their browser
 makes a key that cannot be copied out of it, and the two devices are paired.
