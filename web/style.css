@@ -114,7 +114,7 @@ button { cursor: pointer; }
   background: var(--cream); overflow: hidden;
   box-shadow: 0 0 0 1px rgba(0,0,0,.25), 0 30px 80px rgba(0,0,0,.45);
 }
-#app::after {
+#app::after, #side::after {
   content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 50; mix-blend-mode: var(--scan-blend); opacity: .5;
   background:
     repeating-linear-gradient(0deg, var(--scan) 0 1px, transparent 1px 3px),
@@ -587,3 +587,27 @@ main.board .swatches { margin: 0; justify-content: center; }
 .chathead { grid-template-columns: auto minmax(0, 1fr); grid-auto-flow: column; grid-auto-columns: auto; }
 .chathead.callhead { grid-template-columns: 1fr; }
 main.board canvas.sheet { border-color: var(--ink); }
+
+/* A computer's wide window: the chats in a pane of their own on the left, the
+   screen on the right taking the rest; each its own sleeve, the full height. */
+#side { display: none; }
+@media (min-width: 900px) {
+  body:has(#side:not([hidden])) { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 900px); justify-content: center;
+    height: 100dvh; overflow: hidden; }
+  #side:not([hidden]) { display: flex; flex-direction: column; position: relative; height: 100dvh; overflow: hidden; background: var(--cream);
+    border-right: 3px solid var(--ink); box-shadow: 0 30px 80px rgba(0,0,0,.45); z-index: 2; }
+  #side > main { flex: 1; min-height: 0; overflow-y: auto; }
+  #side .head { padding-bottom: 6px; }
+  #side .side-empty { padding: 18px var(--gutter); }
+  body:has(#side:not([hidden])) #app { max-width: none; height: 100dvh; min-height: 0; }
+  body:has(#side:not([hidden])) #app > main { overflow-y: auto; }
+  #app.fitted { position: relative; top: auto; left: auto; right: auto; height: 100dvh; margin: 0; }
+  html.still body { position: static; }
+  .spine.on { background: var(--cream-2); }
+  .spine.on .tag { width: 14px; }
+  .empty.pick { max-width: 520px; }
+  .empty.pick .row { gap: 12px; }
+  /* A conversation read across a wide pane: lines kept to a readable length. */
+  .tape .msg { max-width: min(70%, 560px); }
+  .chathead > .back.to-list { display: none; }
+}

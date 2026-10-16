@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.6 (2026-10-16): p-chat on a computer
+
+- A wide window (900 px and more) shows the chats in a pane of their own on
+  the left, the open one marked, and the chat - or a call, a game, the
+  whiteboard, Settings - on the right, the full height. Messages keep to a
+  readable width. Esc goes back. A phone is as it was.
+
 ## v1.5 (2026-10-16): back, and the screens that broke
 
 - Back works: each screen deeper is a step in the browser's history, so

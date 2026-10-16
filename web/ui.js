@@ -190,6 +190,7 @@ const state = { screen: 'loading', conv: null, alerts: new Map(), pairing: null,
 const ui = {
   screen(name, data) { show(name, data); },
   async changed(conv) {
+    renderSide();
     if (state.screen === 'chat' && (!conv || conv === state.conv)) await renderChat(false);
     else if (state.screen === 'contacts') await renderContacts();
     else if (state.screen === 'devices' && conv === state.conv) renderDevices();
@@ -341,6 +342,7 @@ function show(name, data = {}) {
   root.classList.toggle('fitted', fitted);
   // The page itself held still meanwhile: only what is meant to scroll does (iPhone).
   document.documentElement.classList.toggle('still', fitted);
+  renderSide();
   const screens = { unsupported, unrecognized, pair: renderPair, contacts: renderContacts, chat: () => renderChat(true),
     invite: renderInvite, meet: renderMeet, devices: renderDevices, paired: renderPaired, about: renderAbout, error: renderError, settings: renderSettings,
     newgroup: renderNewGroup, replace: renderReplace, call: renderCall, game: renderGame, board: renderBoard };
@@ -408,14 +410,17 @@ function renderPair() {
       mine ? h('div', { class: 'emoji', 'data-test': 'own-fingerprint' }, mine.map((e) => h('div', { 'data-glyph': e.glyph }, emojiPic(e), h('span', { class: 'n' }, e.name)))) : null)));
 }
 
-async function renderContacts() {
+// The chats as the list shows them: on Chats (a phone), and in the side
+// pane of a computer's wide window, the open one marked.
+async function chatRows(selected = null) {
   const ids = session.conversations();
   const rows = [];
   for (const id of ids) {
     const info = session.info(id);
     const ms = (await store.messages(id)).filter((m) => !m.hidden);
     const last = ms[ms.length - 1];
-    rows.push(h('li', {}, h('button', { class: 'spine', 'data-test': 'contact', 'data-conv': id, onclick: () => show('chat', { conv: id }) },
+    rows.push(h('li', {}, h('button', { class: 'spine' + (id === selected ? ' on' : ''), 'data-test': selected === null ? 'contact' : 'side-contact', 'data-conv': id,
+      'aria-current': id === selected ? 'true' : null, onclick: () => show('chat', { conv: id }) },
       h('span', { class: 'tag' }),
       h('span', {}, h('span', { class: 'name', dir: 'auto' }, info.name,
         info.kind === 1 ? h('span', { class: 'badge' }, 'group') : info.kind === 2 ? h('span', { class: 'badge' }, 'channel') : null), h('span', { class: 'last' },
@@ -428,27 +433,65 @@ async function renderContacts() {
           return null;
         })()),
       info.unread ? h('span', { class: 'count' + (info.unread > (lastUnread.get(id) || 0) ? ' bump' : ''), 'data-test': 'unread' }, String(info.unread)) : h('span', {}))));
-    lastUnread.set(id, info.unread);
+    if (selected === null) lastUnread.set(id, info.unread);
   }
-  const p = await store.profile();
-  if (state.screen !== 'contacts') return;
   const contacts = ids.some((id) => session.info(id).kind === 0 && !session.info(id).removed);
-  draw(head('Chats'), h('main', {}, releaseBanners(), installBanner(),
-    h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'This phone'),
-      h('p', { class: 'caps light' }, ids.length ? ids.length + (ids.length === 1 ? ' conversation' : ' conversations') : 'Private messages, phone to phone')),
-    h('div', { class: 'lines' }),
-    ids.length ? h('ul', { class: 'shelf' }, rows) : h('div', { class: 'empty', 'data-test': 'no-chats' },
-      h('p', { class: 'caps' }, 'No chats yet'),
-      h('p', {}, 'Invite someone: they scan your code, or open your link.'),
-      h('button', { class: 'btn wide', 'data-test': 'start-invite', onclick: () => show('invite', { invite: null }) }, 'Invite someone'),
-      h('button', { class: 'btn light wide', 'data-test': 'scan-code', onclick: () => scanned() }, 'Scan their code'),
-      h('p', { class: 'fine' }, 'Were you sent a link? Open it on this phone.'))),
-  foot(h('div', { class: 'row' },
-      h('button', { class: 'btn light', 'data-test': 'invite', onclick: () => show('invite', { invite: null }) }, 'Invite'),
-      h('button', { class: 'btn light', 'data-test': 'new-group', disabled: !contacts, onclick: () => show('newgroup', { channel: false }) }, 'Group'),
-      h('button', { class: 'btn light', 'data-test': 'new-channel', disabled: !contacts, onclick: () => show('newgroup', { channel: true }) }, 'Channel')),
-    h('button', { class: 'label cream', onclick: () => show('about') }, 'About')));
+  return { ids, rows, contacts };
 }
+const chatsFoot = (contacts) => foot(h('div', { class: 'row' },
+    h('button', { class: 'btn light', 'data-test': 'invite', onclick: () => show('invite', { invite: null }) }, 'Invite'),
+    h('button', { class: 'btn light', 'data-test': 'new-group', disabled: !contacts, onclick: () => show('newgroup', { channel: false }) }, 'Group'),
+    h('button', { class: 'btn light', 'data-test': 'new-channel', disabled: !contacts, onclick: () => show('newgroup', { channel: true }) }, 'Channel')),
+  h('button', { class: 'label cream', onclick: () => show('about') }, 'About'));
+const noChats = () => h('div', { class: 'empty', 'data-test': 'no-chats' },
+  h('p', { class: 'caps' }, 'No chats yet'),
+  h('p', {}, 'Invite someone: they scan your code, or open your link.'),
+  h('button', { class: 'btn wide', 'data-test': 'start-invite', onclick: () => show('invite', { invite: null }) }, 'Invite someone'),
+  h('button', { class: 'btn light wide', 'data-test': 'scan-code', onclick: () => scanned() }, 'Scan their code'),
+  h('p', { class: 'fine' }, 'Were you sent a link? Open it on this phone.'));
+async function renderContacts() {
+  const { ids, rows, contacts } = await chatRows();
+  if (state.screen !== 'contacts') return;
+  const band = h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'This phone'),
+    h('p', { class: 'caps light' }, ids.length ? ids.length + (ids.length === 1 ? ' conversation' : ' conversations') : 'Private messages, phone to phone'));
+  if (wide() && ids.length) {
+    // A computer: the list is beside; here, room to begin.
+    draw(head('Hello'), h('main', {}, releaseBanners(), installBanner(), band, h('div', { class: 'lines' }),
+      h('div', { class: 'empty pick', 'data-test': 'pick' }, h('p', { class: 'caps' }, 'Pick a chat on the left'),
+        h('p', {}, 'Or begin a new one.'),
+        h('div', { class: 'row' }, h('button', { class: 'btn', 'data-test': 'start-invite', onclick: () => show('invite', { invite: null }) }, 'Invite someone'),
+          h('button', { class: 'btn light', 'data-test': 'scan-code', onclick: () => scanned() }, 'Scan their code')))));
+    return;
+  }
+  draw(head('Chats'), h('main', {}, releaseBanners(), installBanner(), band, h('div', { class: 'lines' }),
+    ids.length ? h('ul', { class: 'shelf' }, rows) : noChats()),
+  chatsFoot(contacts));
+}
+
+// A computer's wide window: the chats in a pane of their own beside the
+// screen, the open chat marked; a phone has one screen at a time.
+const wideWindow = globalThis.matchMedia?.('(min-width: 900px)');
+const wide = () => !!wideWindow?.matches && !!session.app;
+const side = document.getElementById('side');
+let sideTimer = 0;
+function renderSide() {
+  clearTimeout(sideTimer);
+  sideTimer = setTimeout(async () => {
+    if (!wide() || ['unsupported', 'unrecognized', 'loading'].includes(state.screen)) { side.hidden = true; return; }
+    const open = ['chat', 'devices', 'call', 'game', 'board', 'replace'].includes(state.screen) ? state.conv : '';
+    const { ids, rows, contacts } = await chatRows(open);
+    side.hidden = false;
+    side.replaceChildren(head('Chats', { small: true }),
+      h('main', {}, ids.length ? h('ul', { class: 'shelf' }, rows) : h('p', { class: 'fine side-empty' }, 'No chats yet.')),
+      chatsFoot(contacts));
+  }, 60);
+}
+wideWindow?.addEventListener('change', () => { renderSide(); if (state.screen) show(state.screen, {}); });
+// Esc goes back, on a computer as the back key does on a phone.
+addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape' || state.screen === 'call' || document.querySelector('[data-test=scanner]')) return;
+  if (steps.length > 1) history.back();
+});
 
 let drawnChat = null;
 async function renderChat(first) {
@@ -614,7 +657,7 @@ async function renderChat(first) {
   // Another screen came while this one was being made: it is not drawn over it.
   if (state.screen !== 'chat' || state.conv !== id) return;
   const chathead = h('div', { class: 'chathead' },
-    h('button', { class: 'back', 'data-test': 'back', 'aria-label': 'Back', onclick: () => show('contacts') }, '◀'),
+    h('button', { class: 'back to-list', 'data-test': 'back', 'aria-label': 'Back', onclick: () => show('contacts') }, '◀'),
     h('div', {}, h('h1', { 'data-test': 'chat-name', dir: 'auto' }, info.name), h('div', { class: 'sub' },
       info.kind === 2 ? (info.member ? 'Your channel' : 'Channel · read only')
         : info.kind === 1 ? info.members.length + ' devices · group' : info.members.length - 1 + (info.members.length === 2 ? ' device' : ' devices') + ' · sealed',
