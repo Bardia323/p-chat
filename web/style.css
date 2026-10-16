@@ -226,7 +226,8 @@ button.label.cream:active { box-shadow: 0 0 0 2px var(--cream), 0 0 0 4px var(--
 .chathead .back { font-size: 20px; padding: 6px 6px 6px 0; }
 .chathead .label { font-size: 14px; padding: 1px 7px; border-width: 2px; box-shadow: var(--press); margin: 0 0 3px; }
 .chathead .label:active { transform: translate(var(--sink-x, 0), var(--sink, 3px)); box-shadow: var(--pressed); }
-.tape { flex: 1; overflow-y: auto; padding: 22px 12px 12px; display: flex; flex-direction: column; gap: 4px; }
+/* The last message clears the composer's stripes (10 px above it) with room to spare. */
+.tape { flex: 1; overflow-y: auto; padding: 22px 12px 28px; display: flex; flex-direction: column; gap: 4px; }
 .msg { max-width: 86%; padding: 8px 12px 7px; border-radius: 18px 18px 18px 6px; background: var(--paper);
   border: 2px solid var(--line); box-shadow: var(--bubble);
   font: 500 16.5px/1.38 var(--sans); white-space: pre-wrap; overflow-wrap: anywhere; }
@@ -400,28 +401,63 @@ canvas.sheet { aspect-ratio: 1; cursor: crosshair; }
 .call-key svg { width: 18px; height: 18px; }
 .banner.ring { background: var(--amber); animation: ring 1.2s ease-in-out infinite; }
 @keyframes ring { 0%, 100% { transform: none; } 10% { transform: rotate(-1deg); } 20% { transform: rotate(1deg); } 30% { transform: none; } }
-.callhead { padding: 14px var(--gutter) 6px; background: #141414; color: #f3e8cf; }
-.callhead h1 { margin: 0; font: 400 26px/1.05 var(--display); }
-.callhead .sub { font: 600 10px/1.2 var(--sans); letter-spacing: .14em; text-transform: uppercase; opacity: .7; }
-main.call { position: relative; background: #141414; color: #f3e8cf; padding: 10px var(--gutter) 16px; min-height: 60vh; }
-.tiles { display: grid; gap: 10px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
-.tile { margin: 0; border: 3px solid #f3e8cf; border-radius: 14px; overflow: hidden; background: #000; position: relative;
+/* A call, in the sleeve's look: the chat's heading; the other side large, in
+   the court's frame (ink, the stepped stripes); you in its corner; the
+   composer's bar of keys that press in. */
+.callhead { grid-template-columns: 1fr; }
+.callhead .sub span { font-variant-numeric: tabular-nums; }
+main.call { flex: 1; min-height: 0; position: relative; padding: 14px 16px 18px; }
+.screens { position: relative; height: 100%; display: grid; gap: 14px; grid-template-columns: 1fr; grid-auto-rows: minmax(0, 1fr); }
+.screens[data-n="2"] { grid-template-rows: 1fr 1fr; }
+.screens[data-n="3"], .screens[data-n="4"] { grid-template-columns: 1fr 1fr; }
+.tile { margin: 0; position: relative; overflow: hidden; min-height: 0; border: 3px solid var(--ink); border-radius: 18px; background: #141414;
   box-shadow: 2px 3px 0 #ffc21a, 4px 6px 0 #ff4f2b, 6px 9px 0 #5b2bd8; }
-.tile canvas { display: block; width: 100%; aspect-ratio: 16 / 9; height: auto; }
+.tile canvas { display: block; width: 100%; height: 100%; object-fit: cover; }
 .tile.picked { border-color: #ffc21a; }
-.tile figcaption { position: absolute; left: 8px; bottom: 6px; font: 400 16px/1 var(--display); text-shadow: 0 1px 2px #000; }
-video.me { position: absolute; right: calc(var(--gutter) + 6px); bottom: 46px; width: 28%; max-width: 160px; aspect-ratio: 16 / 9;
-  object-fit: cover; border: 2px solid #f3e8cf; border-radius: 10px; background: #000; }
-.call .waiting { padding: 40px 0; text-align: center; }
-.call .stats { margin: 10px 0 0; font-size: 12px; opacity: .8; }
-.decks { display: flex; gap: 12px; justify-content: center; align-items: center; padding: 14px var(--gutter) 22px; background: #141414; }
-.deck { min-height: 44px; padding: 8px 14px; border: 2px solid #f3e8cf; border-radius: 12px; background: #222; color: #f3e8cf;
-  font: 700 13px/1 var(--sans); letter-spacing: .1em; text-transform: uppercase; box-shadow: var(--press); }
-.deck[aria-pressed=true] { background: #f3e8cf; color: #141414; transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: var(--pressed); }
-.hang { width: 64px; height: 64px; border-radius: 50%; border: 3px solid #f3e8cf; background: var(--red); color: #fff; display: grid;
-  place-items: center; box-shadow: var(--press); transition: transform .06s, box-shadow .06s; }
-.hang svg { width: 30px; height: 30px; }
-.hang:active { transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: var(--pressed); }
+.tile figcaption { position: absolute; left: 10px; bottom: 9px; padding: 3px 8px; border-radius: 8px; background: var(--cream); color: var(--ink);
+  font: 700 11px/1 var(--sans); letter-spacing: .1em; text-transform: uppercase; }
+.screens[data-n="1"] .tile figcaption { display: none; }
+/* Waiting: the court's frame, empty, rings going out from the middle. */
+.calling { display: grid; place-items: center; align-content: center; gap: 8px; text-align: center; border: 3px dashed var(--ink-2);
+  border-radius: 18px; }
+.calling p { margin: 0; font: 400 26px/1.1 var(--display); color: var(--ink); }
+.calling .fine { font: 500 13px/1.3 var(--sans); color: var(--ink-2); }
+/* Calling: a disc that goes round the sleeve's stripes - yellow to red in the
+   light, on to violet in the dark - breathing, and rings going out from it
+   in the same colours, each a step behind the last: a wave of colour. */
+.rings { --beat: 2.4s; position: relative; width: 96px; height: 96px; margin-bottom: 14px; display: grid; place-items: center; }
+.rings b { width: 30px; height: 30px; border-radius: 50%; background: var(--yellow);
+  animation: stripes calc(var(--beat) * 4) linear infinite, breathe var(--beat) cubic-bezier(.45, 0, .55, 1) infinite; }
+.rings i { position: absolute; inset: 0; border-radius: 50%; border: 3px solid var(--yellow); opacity: 0;
+  animation: ripple var(--beat) cubic-bezier(.16, .84, .3, 1) infinite, stripes-ring calc(var(--beat) * 4) linear infinite; }
+.rings i:nth-child(2) { animation-delay: calc(var(--beat) / -3 * 2); }
+.rings i:nth-child(3) { animation-delay: calc(var(--beat) / -3); }
+@keyframes ripple { 0% { transform: scale(.32); opacity: 0; } 12% { opacity: 1; } 100% { transform: scale(1.5); opacity: 0; } }
+@keyframes breathe { 0%, 100% { transform: scale(.9); } 50% { transform: scale(1.08); } }
+@keyframes stripes { 0%, 100% { background: var(--yellow); } 25% { background: var(--amber); } 50% { background: var(--orange); } 75% { background: var(--red); } }
+@keyframes stripes-ring { 0%, 100% { border-color: var(--yellow); } 25% { border-color: var(--amber); } 50% { border-color: var(--orange); } 75% { border-color: var(--red); } }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme=light]) .rings b { animation-name: stripes-dark, breathe; }
+  :root:not([data-theme=light]) .rings i { animation-name: ripple, stripes-ring-dark; } }
+:root[data-theme=dark] .rings b { animation-name: stripes-dark, breathe; }
+:root[data-theme=dark] .rings i { animation-name: ripple, stripes-ring-dark; }
+@keyframes stripes-dark { 0%, 100% { background: var(--yellow); } 20% { background: var(--amber); } 40% { background: var(--orange); }
+  60% { background: var(--red); } 80% { background: var(--violet); } }
+@keyframes stripes-ring-dark { 0%, 100% { border-color: var(--yellow); } 20% { border-color: var(--amber); } 40% { border-color: var(--orange); }
+  60% { border-color: var(--red); } 80% { border-color: var(--violet); } }
+/* You: a small picture in the frame's corner, mirrored. */
+video.me { position: absolute; z-index: 2; right: 30px; top: 28px; width: 27%; max-width: 140px; aspect-ratio: 3 / 4; object-fit: cover;
+  transform: scaleX(-1); border: 3px solid var(--cream); border-radius: 12px; background: #141414; box-shadow: 0 0 0 2px var(--ink); }
+/* The keys: the composer's, larger; hang up red, the others paper. */
+.decks { justify-content: center; align-items: center; gap: 22px; padding-top: 16px; }
+.decks .key { width: 58px; height: 58px; margin: 0 0 6px; }
+.decks .key svg { width: 26px; height: 26px; margin: 0; }
+.decks .deck { background: var(--paper); color: var(--ink); }
+.decks .deck[aria-pressed=true] { background: var(--ink); color: var(--cream); }
+.decks .hang { width: 68px; height: 68px; background: var(--red); color: var(--script); }
+.decks .hang svg { width: 32px; height: 32px; }
+.decks .stats { flex-basis: 100%; margin: 0; text-align: center; font: 500 9px/1 ui-monospace, monospace; letter-spacing: .06em; color: var(--ink-2); opacity: .7; }
+@media (prefers-reduced-motion: reduce) { .rings i { animation: none; } .rings b { animation: none; } }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
@@ -506,3 +542,11 @@ details.more .mono { word-break: break-all; }
 #app.fitted { position: fixed; top: var(--view-top, 0); left: 0; right: 0; margin: 0 auto; height: var(--view-h, 100dvh); min-height: 0; }
 #app.fitted > main { min-height: 0; overflow: hidden; }
 #app.fitted .tape { min-height: 0; overscroll-behavior: contain; }
+
+/* The send key with nothing written: a voice note; red and beating while it records. */
+.key.voice svg { margin-left: 0; }
+.key.recording { animation: pulse 1s ease-in-out infinite; }
+
+/* The Home Screen banner: the sleeve's yellow; Safari's share mark drawn inline. */
+.banner.install p { margin: 4px 0 8px; }
+.banner.install svg.inline { width: 17px; height: 17px; vertical-align: -3px; }

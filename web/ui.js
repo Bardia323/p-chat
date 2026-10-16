@@ -285,7 +285,7 @@ function show(name, data = {}) {
   if (name !== state.screen || data.conv !== undefined) entering = to >= from ? 'from-right' : 'from-left';
   Object.assign(state, { screen: name, ...data });
   // A chat fills what can be seen and no more: its messages scroll inside it.
-  root.classList.toggle('fitted', name === 'chat');
+  root.classList.toggle('fitted', name === 'chat' || name === 'call');
   const screens = { unsupported, unrecognized, pair: renderPair, contacts: renderContacts, chat: () => renderChat(true),
     invite: renderInvite, meet: renderMeet, devices: renderDevices, paired: renderPaired, about: renderAbout, error: renderError, settings: renderSettings,
     newgroup: renderNewGroup, replace: renderReplace, call: renderCall, game: renderGame, board: renderBoard };
@@ -366,7 +366,7 @@ async function renderContacts() {
   const p = await store.profile();
   if (state.screen !== 'contacts') return;
   const contacts = ids.some((id) => session.info(id).kind === 0 && !session.info(id).removed);
-  draw(head('Chats'), h('main', {}, releaseBanners(),
+  draw(head('Chats'), h('main', {}, releaseBanners(), installBanner(),
     h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'This phone'),
       h('p', { class: 'caps light' }, ids.length ? ids.length + (ids.length === 1 ? ' conversation' : ' conversations') : 'Private messages, phone to phone')),
     h('div', { class: 'lines' }),
@@ -446,7 +446,24 @@ async function renderChat(first) {
   const input = h('textarea', { rows: 1, placeholder: info.removed ? 'Removed' : cut ? 'Not linked to them, and no relay: can\'t send now' : 'Message',
     disabled: info.removed || cut, 'data-test': 'message', dir: 'auto', maxlength: 20000, 'aria-label': 'Message' });
   const key = h('button', { class: 'key', 'data-test': 'send', 'aria-label': 'Send', title: 'Send', disabled: info.removed || cut });
-  key.append(svg('<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 2.5v15L17.5 10z" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>'));
+  // The key sends what is written; with nothing written it records a voice
+  // note (tap, speak, tap again), and while recording it stops.
+  const KEY = {
+    send: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 2.5v15L17.5 10z" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>',
+    voice: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="2" width="6" height="11" rx="3" fill="currentColor"/><path d="M4 9a6 6 0 0 0 12 0M10 15v3" stroke="currentColor" stroke-width="2" fill="none"/></svg>',
+    stop: '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="5" y="5" width="10" height="10" rx="2" fill="currentColor"/></svg>',
+  };
+  const keyShows = () => {
+    const now = rec ? 'stop' : input.value.trim() ? 'send' : 'voice';
+    if (key.dataset.shows === now) return;
+    key.dataset.shows = now;
+    key.setAttribute('aria-label', { send: 'Send', voice: 'Record a voice note', stop: 'Stop and send' }[now]);
+    key.classList.toggle('voice', now !== 'send');
+    key.classList.toggle('recording', now === 'stop');
+    key.replaceChildren(svg(KEY[now]));
+  };
+  // What was just said, in sight: the list goes to its end.
+  const toEnd = () => { const tp = root.querySelector('.tape'); if (tp) { tp.scrollTop = tp.scrollHeight; tp.dataset.end = '1'; } };
   const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight + 4, 140) + 'px'; };
   input.addEventListener('input', grow);
   const send = async () => {
@@ -458,19 +475,23 @@ async function renderChat(first) {
     void key.offsetWidth;
     key.classList.add('pressed', 'fire');
     setTimeout(() => key.classList.remove('pressed'), 120);
+    keyShows();
     await session.send(id, t);
     await renderChat(false);
+    toEnd();
     root.querySelector('[data-test=message]')?.focus();
   };
-  key.onclick = send;
+  key.onclick = () => (rec || !input.value.trim() ? voice() : send());
+  input.addEventListener('input', () => keyShows());
   const pick = (accept, kind) => {
     const f = h('input', { type: 'file', accept, class: 'hidden', 'data-test': 'file-' + kind });
     f.onchange = async () => {
-      tray.classList.add('hidden');
+      setTray(false);
       for (const file of f.files) {
         try { await session.sendFile(id, file); } catch (e) { toast(e.message); }
       }
       await renderChat(false);
+      toEnd();
     };
     return f;
   };
@@ -478,24 +499,33 @@ async function renderChat(first) {
   const stickers = h('div', { class: 'stickers hidden', 'data-test': 'sticker-picker' });
   session.media.stickers().then((pack) => stickers.append(...pack.stickers.map((s) =>
     h('button', { class: 'sticker-key', 'data-test': 'sticker-' + s.file, onclick: async () => {
-      stickers.classList.add('hidden'); tray.classList.add('hidden');
-      await session.media.sticker(id, s);
+      stickers.classList.add('hidden'); setTray(false);
+      await session.media.sticker(id, s).catch((e) => toast(e.message));
       await renderChat(false);
+      toEnd();
     } }, h('img', { src: 'stickers/' + s.file, alt: s.file.replace('.svg', '') })))));
   let rec = null;
-  const mic = h('button', { class: 'tray-key', 'data-test': 'voice', onclick: async () => {
+  async function voice() {
     if (!rec) {
+      if (!session.canSend(id)) return;
       try { rec = await recorder(); mic.classList.add('recording'); mic.lastChild.textContent = 'Stop'; } catch (e) { toast('No microphone: ' + e.message); }
+      keyShows();
       return;
     }
     const r = rec;
     rec = null;
     mic.classList.remove('recording');
+    mic.lastChild.textContent = 'Voice';
+    keyShows();
     const v = await r.stop();
-    tray.classList.add('hidden');
-    await session.sendPrepared(id, { kind: FILE.voice, blob: v.blob, mime: v.mime, name: 'voice', duration: v.duration, width: 0, height: 0, thumbnail: new Uint8Array(0) });
+    setTray(false);
+    try {
+      await session.sendPrepared(id, { kind: FILE.voice, blob: v.blob, mime: v.mime, name: 'voice', duration: v.duration, width: 0, height: 0, thumbnail: new Uint8Array(0) });
+    } catch (e) { toast(e.message); }
     await renderChat(false);
-  } }, svg('<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="2" width="6" height="11" rx="3" fill="currentColor"/><path d="M4 9a6 6 0 0 0 12 0M10 15v3" stroke="currentColor" stroke-width="2" fill="none"/></svg>'), h('span', {}, 'Voice'));
+    toEnd();
+  }
+  const mic = h('button', { class: 'tray-key', 'data-test': 'voice', onclick: voice }, svg('<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="7" y="2" width="6" height="11" rx="3" fill="currentColor"/><path d="M4 9a6 6 0 0 0 12 0M10 15v3" stroke="currentColor" stroke-width="2" fill="none"/></svg>'), h('span', {}, 'Voice'));
   const tray = h('div', { class: 'tray hidden', 'data-test': 'tray' },
     h('button', { class: 'tray-key', 'data-test': 'pick-media', onclick: () => photos.click() }, svg('<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="4" width="16" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="7" cy="9" r="1.6" fill="currentColor"/><path d="M3 15l5-5 4 4 2-2 3 3" fill="none" stroke="currentColor" stroke-width="2"/></svg>'), h('span', {}, 'Photo')),
     h('button', { class: 'tray-key', 'data-test': 'pick-file', onclick: () => files.click() }, svg('<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5 2h7l4 4v12H5z" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/><path d="M12 2v4h4" fill="none" stroke="currentColor" stroke-width="2"/></svg>'), h('span', {}, 'File')),
@@ -504,9 +534,16 @@ async function renderChat(first) {
     info.kind === 0 ? liveKey(id, 'play') : null,
     mic, photos, files);
   const attach = h('button', { class: 'key attach', 'data-test': 'attach', 'aria-label': 'Attach', title: 'Attach', disabled: info.removed || cut,
-    onclick: () => { tray.classList.toggle('hidden'); attach.classList.toggle('open'); } });
+    onclick: () => setTray(tray.classList.contains('hidden')) });
+  // The tray and its key say the same thing, always: open, the + turned to ×.
+  function setTray(open) {
+    tray.classList.toggle('hidden', !open);
+    attach.classList.toggle('open', open);
+    if (!open) stickers.classList.add('hidden');
+  }
   attach.append(svg('<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v14M3 10h14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>'));
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
+  keyShows();
   // Another screen came while this one was being made: it is not drawn over it.
   if (state.screen !== 'chat' || state.conv !== id) return;
   const chathead = h('div', { class: 'chathead' },
@@ -940,47 +977,79 @@ function callKey(id, live = false) {
   return key;
 }
 let callTimer = null;
+// A call, in the sleeve's own look: the chat's heading, the other side large
+// in the court's frame (ink, the stepped stripes), you in its corner, and
+// keys that press in at the foot, as the composer's do.
+const ICON = {
+  mic: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  micOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3" fill="currentColor"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M4 4l16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  cam: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6.5" width="12.5" height="11" rx="2.5" fill="currentColor"/><path d="M16.5 10.5l4.5-2.5v8l-4.5-2.5z" fill="currentColor"/></svg>',
+  camOff: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6.5" width="12.5" height="11" rx="2.5" fill="currentColor"/><path d="M16.5 10.5l4.5-2.5v8l-4.5-2.5zM4 4l16 16" fill="currentColor" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  hang: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 13.5c5.4-4.8 13.6-4.8 19 0l-1.9 3-3.7-1.4v-2.6a9.5 9.5 0 0 0-7.8 0v2.6l-3.7 1.4z" fill="currentColor"/></svg>',
+};
 function renderCall() {
   const id = state.conv;
   const k = session.calls.info();
   if (!k) return show('chat', { conv: id });
   const info = session.info(id);
-  const tiles = h('div', { class: 'tiles', 'data-test': 'tiles' });
+  const live = k.mode === 1;
+  const screens = h('div', { class: 'screens', 'data-test': 'tiles' });
   const me = session.calls.stream ? h('video', { class: 'me', muted: true, autoplay: true, playsinline: true, 'aria-label': 'You' }) : null;
   if (me) { me.muted = true; me.srcObject = session.calls.stream; }
+  // A picture fills its glass when its shape is near the glass's; else it is shown whole.
+  const fit = () => {
+    for (const c of screens.querySelectorAll('canvas')) {
+      const box = c.parentElement.getBoundingClientRect();
+      if (!box.width || !box.height || !c.width) continue;
+      const a = c.width / c.height, b = box.width / box.height;
+      c.style.objectFit = Math.max(a / b, b / a) < 1.45 ? 'cover' : 'contain';
+    }
+  };
   const fill = () => {
-    // Through a tree: a tile tapped is that speaker's full picture.
-    tiles.replaceChildren(...[...session.calls.remote.entries()].map(([peer, r]) =>
+    const remote = [...session.calls.remote.entries()];
+    screens.dataset.n = String(Math.min(remote.length, 4));
+    // Through a tree: a screen tapped is that speaker's full picture.
+    screens.replaceChildren(...remote.map(([peer, r]) =>
       h('figure', { class: 'tile' + (session.calls.picked === peer ? ' picked' : ''), 'data-test': 'tile', 'data-peer': peer,
         onclick: () => k.mode === 2 && session.calls.pick(peer) }, r.canvas, h('figcaption', { dir: 'auto' }, speaker(peer)))));
-    if (!session.calls.remote.size) tiles.append(h('p', { class: 'caps light waiting' },
-      k.mode === 1 && k.starter === session.app.peer() ? 'On air. Viewers join from the chat.' : 'Ringing…'));
+    if (!remote.length) screens.append(h('div', { class: 'calling' }, h('div', { class: 'rings' }, h('i'), h('i'), h('i'), h('b')),
+      h('p', {}, live && k.starter === session.app.peer() ? 'On air' : 'Calling ' + info.name + '…'),
+      h('p', { class: 'fine' }, live && k.starter === session.app.peer() ? 'Viewers join from the chat.' : 'Sealed: only they can open it.')));
+    requestAnimationFrame(fit);
   };
   session.calls.onchange = fill;
+  session.calls.onshape = () => requestAnimationFrame(fit);
   fill();
-  const stats = h('p', { class: 'mono stats', 'data-test': 'call-stats' });
-  const mute = h('button', { class: 'deck', 'aria-pressed': String(session.calls.muted), 'data-test': 'mute', onclick: () => {
-    session.calls.muted = !session.calls.muted; mute.setAttribute('aria-pressed', String(session.calls.muted));
-  } }, 'Mute');
-  const cam = h('button', { class: 'deck', 'aria-pressed': String(!session.calls.camera), 'data-test': 'camera', onclick: () => {
-    session.calls.camera = !session.calls.camera; cam.setAttribute('aria-pressed', String(!session.calls.camera));
-  } }, 'Camera off');
-  const hang = h('button', { class: 'hang', 'data-test': 'hang', 'aria-label': 'Hang up', onclick: async () => {
+  const clock = h('span', { 'data-test': 'call-clock' }, '0:00');
+  const stats = h('p', { class: 'stats', 'data-test': 'call-stats' });
+  const key = (test, label, on, off, pressed, act) => {
+    const b = h('button', { class: 'key deck', 'data-test': test, 'aria-label': label, 'aria-pressed': String(pressed()), onclick: () => {
+      act(); b.setAttribute('aria-pressed', String(pressed())); b.replaceChildren(svg(pressed() ? off : on));
+    } });
+    b.append(svg(pressed() ? off : on));
+    return b;
+  };
+  const mute = key('mute', 'Mute', ICON.mic, ICON.micOff, () => session.calls.muted, () => { session.calls.muted = !session.calls.muted; });
+  const cam = key('camera', 'Camera off', ICON.cam, ICON.camOff, () => !session.calls.camera, () => { session.calls.camera = !session.calls.camera; });
+  const hang = h('button', { class: 'key hang', 'data-test': 'hang', 'aria-label': 'Hang up', onclick: async () => {
     await session.calls.hang(); show('chat', { conv: id });
   } });
-  hang.append(svg('<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M2 11.5c4.5-4 11.5-4 16 0l-1.6 2.6-3.2-1.2v-2.2a8 8 0 0 0-6.4 0v2.2l-3.2 1.2z" fill="currentColor"/></svg>'));
-  const live = k.mode === 1;
-  draw(h('div', { class: 'callhead' }, h('h1', { dir: 'auto' }, info.name),
-    h('div', { class: 'sub' }, (live ? (k.starter === session.app.peer() ? 'You are live' : 'Watching') + ' · ' : '') + 'Sealed · each frame checked before it plays')),
-    h('main', { class: 'call' }, tiles, me, stats),
-    h('div', { class: 'decks' }, session.calls.stream ? mute : null, session.calls.stream ? cam : null, hang));
+  hang.append(svg(ICON.hang));
+  draw(h('div', { class: 'chathead callhead' },
+      h('div', {}, h('h1', { dir: 'auto' }, info.name),
+        h('div', { class: 'sub' }, (live ? (k.starter === session.app.peer() ? 'Live · ' : 'Watching · ') : 'Sealed · '), clock))),
+    h('main', { class: 'call' }, screens, me),
+    h('div', { class: 'composer decks' }, session.calls.stream ? mute : null, hang, session.calls.stream ? cam : null, stats));
   clearInterval(callTimer);
+  const began = Date.now();
   const tick = () => {
     if (state.screen !== 'call') return clearInterval(callTimer);
     const s = session.calls.stats();
+    const secs = Math.floor((Date.now() - began) / 1000);
+    clock.textContent = Math.floor(secs / 60) + ':' + String(secs % 60).padStart(2, '0');
     const fw = session.calls.info()?.forwarders?.filter(Boolean).length || 0;
-    stats.textContent = `${s.in} in the call · ${s.played} played · ${s.refused} refused · latency ${s.p50} ms (p95 ${s.p95})` +
-      (k.mode !== 0 ? ` · ${fw} forwarding` : '');
+    stats.textContent = `${s.in} in the call · ${s.played} played · ${s.refused} refused · ${s.p50} ms` + (k.mode !== 0 ? ` · ${fw} forwarding` : '');
+    fit();
   };
   tick();
   callTimer = setInterval(tick, 500);
@@ -1220,6 +1289,33 @@ function reachable(url) {
     ws.onopen = () => end(null);
     ws.onerror = () => end('Can\'t reach it. Check the address, or try again later.');
   });
+}
+
+// Putting p-chat on the Home Screen: Safari offers no prompt, so the two
+// steps are shown; where the browser has its own (Chrome), its button. Not
+// in the installed app, and gone once dismissed. Done first: the Home Screen
+// copy keeps its own chats.
+let installPrompt = null;
+addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; if (state.screen === 'contacts') renderContacts(); });
+const remembered = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
+const remember = (k, v) => { try { localStorage.setItem(k, v); } catch { /* not kept */ } };
+function installBanner() {
+  if (remembered('p-chat:install-dismissed') || !(needsHomeScreen() || installPrompt)) return null;
+  const box = h('div', { class: 'banner install', 'data-test': 'install' },
+    h('b', {}, 'Put p-chat on your Home Screen'),
+    installPrompt
+      ? h('p', {}, 'It opens like an app, and can tell you when something comes.')
+      : h('p', {}, 'Tap Share ', svg('<svg class="inline" viewBox="0 0 20 20" aria-label="(the square with an arrow)"><path d="M10 2v10M6 6l4-4 4 4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 9H4v9h12V9h-1" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>'),
+        ' at the bottom of Safari, then Add to Home Screen. Do it before pairing: the Home Screen copy keeps its own chats.'),
+    h('div', { class: 'row' },
+      installPrompt ? h('button', { class: 'btn', 'data-test': 'install-now', onclick: async () => {
+        installPrompt.prompt();
+        await installPrompt.userChoice.catch(() => null);
+        installPrompt = null;
+        renderContacts();
+      } }, 'Install') : null,
+      h('button', { class: 'btn light', 'data-test': 'install-later', onclick: () => { remember('p-chat:install-dismissed', '1'); box.remove(); } }, 'Not now')));
+  return box;
 }
 
 // Notifications: on an iPhone in a tab, the way to the Home Screen first.

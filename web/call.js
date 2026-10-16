@@ -6,7 +6,17 @@
 // decoded here. Nothing of a call is kept.
 export const MODE = { mesh: 0, swarm: 1, hybrid: 2 };
 const LAYER = { full: 0, small: 1, audio: 2 };
-const FPS = 15, WIDTH = 640, HEIGHT = 360, SMALL_W = 320, SMALL_H = 180;
+const FPS = 15, LONG = 640, SMALL_LONG = 320;
+// Sound is played this far ahead of now: enough to ride the jitter of pieces
+// that come in bursts (named by roots a tenth of a second apart), and no more.
+// Ahead by more than LATE, a piece is dropped until it is back (speech loses
+// nothing a listener hears); behind, it starts again at LEAD.
+const LEAD = 0.12, LATE = 0.32;
+// A picture's size as the camera gives it, its long side LONG at most, even.
+const sized = (w, h, long) => {
+  const s = Math.min(1, long / Math.max(w, h));
+  return [Math.max(2, Math.round((w * s) / 2) * 2), Math.max(2, Math.round((h * s) / 2) * 2)];
+};
 
 export class Calls {
   constructor(session) {
@@ -17,7 +27,14 @@ export class Calls {
 
   // Talk: everyone to everyone up to five devices, speakers through a small
   // tree beyond. A stream (`live`): this device to a swarm.
+  // The sound, started in the tap itself (before anything is awaited): a phone
+  // (Safari) keeps a context made otherwise paused, and sound queued for it plays late.
+  wake() {
+    this.ctx ??= new AudioContext({ latencyHint: 'interactive' });
+    this.ctx.resume().catch(() => {});
+  }
   async start(conv, live = false, mode = null) {
+    this.wake();
     if (!Calls.supported()) throw new Error('This browser cannot make calls (it has no WebCodecs).');
     const devices = this.s.info(conv).members.length;
     const id = this.s.app.startCall(conv, mode ?? (live ? MODE.swarm : devices <= 5 ? MODE.mesh : MODE.hybrid));
@@ -26,6 +43,7 @@ export class Calls {
     return id;
   }
   async answer(id) {
+    this.wake();
     if (!Calls.supported()) throw new Error('This browser cannot make calls (it has no WebCodecs).');
     const k = this.s.app.calls().find((c) => c.id === id);
     this.s.app.joinCall(id, Calls.capacity());
@@ -45,9 +63,11 @@ export class Calls {
 
   async open(id, speaking) {
     this.id = id;
-    this.ctx = new AudioContext();
+    this.wake();
     if (speaking) {
-      this.stream = await navigator.mediaDevices.getUserMedia({ video: { width: WIDTH, height: HEIGHT, frameRate: FPS }, audio: true });
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        video: { width: { ideal: LONG }, height: { ideal: LONG }, frameRate: FPS, facingMode: 'user' },
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       this.startVideo();
       this.startAudio();
     }
@@ -72,13 +92,22 @@ export class Calls {
       },
       error: (e) => console.error('video encoder', e),
     }));
-    encoder.configure({ codec: 'vp8', width: WIDTH, height: HEIGHT, bitrate: 600_000, framerate: FPS, latencyMode: 'realtime' });
+    // Configured by the frames: a phone held upright gives an upright picture,
+    // and it is sent upright - never squeezed into a size it is not.
+    let shape = '';
     const keyEvery = FPS * 2;
     const take = (frame) => {
+      const [w, hgt] = sized(frame.displayWidth, frame.displayHeight, LONG);
+      if (w + 'x' + hgt !== shape && encoder.state !== 'closed') {
+        shape = w + 'x' + hgt;
+        encoder.configure({ codec: 'vp8', width: w, height: hgt, bitrate: 600_000, framerate: FPS, latencyMode: 'realtime' });
+        if (small) small.shape(frame.displayWidth, frame.displayHeight);
+        frames = 0;  // a new shape starts at a key frame
+      }
       const key = frames++ % keyEvery === 0;
       if (encoder.state === 'configured' && encoder.encodeQueueSize < 4 && this.camera) encoder.encode(frame, { keyFrame: key });
       if (small && small.encoder.state === 'configured' && small.encoder.encodeQueueSize < 4 && this.camera) {
-        small.ctx.drawImage(frame, 0, 0, SMALL_W, SMALL_H);
+        small.ctx.drawImage(frame, 0, 0, small.canvas.width, small.canvas.height);
         const f = new VideoFrame(small.canvas, { timestamp: frame.timestamp });
         small.encoder.encode(f, { keyFrame: key });
         f.close();
@@ -104,7 +133,7 @@ export class Calls {
     }
   }
   smallEncoder() {
-    const canvas = new OffscreenCanvas(SMALL_W, SMALL_H);
+    const canvas = new OffscreenCanvas(SMALL_LONG, SMALL_LONG);
     const encoder = new VideoEncoder({
       output: (chunk) => {
         const data = new Uint8Array(chunk.byteLength);
@@ -113,9 +142,12 @@ export class Calls {
       },
       error: (e) => console.error('small encoder', e),
     });
-    encoder.configure({ codec: 'vp8', width: SMALL_W, height: SMALL_H, bitrate: 150_000, framerate: FPS, latencyMode: 'realtime' });
     this.smallVideo = encoder;
-    return { canvas, ctx: canvas.getContext('2d'), encoder };
+    const shape = (w, hgt) => {
+      [canvas.width, canvas.height] = sized(w, hgt, SMALL_LONG);
+      encoder.configure({ codec: 'vp8', width: canvas.width, height: canvas.height, bitrate: 150_000, framerate: FPS, latencyMode: 'realtime' });
+    };
+    return { canvas, ctx: canvas.getContext('2d'), encoder, shape };
   }
   // A tree: whose full picture this device wants (one at a time).
   pick(speaker) {
@@ -126,7 +158,7 @@ export class Calls {
   }
   startAudio() {
     const track = this.stream.getAudioTracks()[0];
-    if (!track || !('AudioEncoder' in globalThis) || !('MediaStreamTrackProcessor' in globalThis)) return;
+    if (!track || !('AudioEncoder' in globalThis)) return;
     const encoder = (this.audio = new AudioEncoder({
       output: (chunk) => {
         const data = new Uint8Array(chunk.byteLength);
@@ -136,6 +168,7 @@ export class Calls {
       error: (e) => console.error('audio encoder', e),
     }));
     encoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1, bitrate: 32000 });
+    if (!('MediaStreamTrackProcessor' in globalThis)) return this.workletAudio(track, encoder);
     const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
     const pull = async () => {
       for (;;) {
@@ -146,6 +179,27 @@ export class Calls {
       }
     };
     pull();
+  }
+  // The microphone where a track gives no frames of its own (Safari): its
+  // samples taken by an audio worklet, 20 ms at a time, and encoded alike.
+  async workletAudio(track, encoder) {
+    const ctx = new AudioContext({ sampleRate: 48000, latencyHint: 'interactive' });
+    this.micCtx = ctx;
+    await ctx.audioWorklet.addModule('mic.js');
+    const source = ctx.createMediaStreamSource(new MediaStream([track]));
+    const node = new AudioWorkletNode(ctx, 'p-chat-mic', { numberOfInputs: 1, numberOfOutputs: 0, channelCount: 1 });
+    let at = 0;
+    node.port.onmessage = (e) => {
+      if (!this.id || encoder.state !== 'configured' || this.muted) return;
+      const samples = e.data;
+      const data = new AudioData({ format: 'f32-planar', sampleRate: ctx.sampleRate, numberOfFrames: samples.length, numberOfChannels: 1,
+        timestamp: Math.round((at / ctx.sampleRate) * 1e6), data: samples });
+      at += samples.length;
+      encoder.encode(data);
+      data.close();
+    };
+    source.connect(node);
+    await ctx.resume().catch(() => {});
   }
   send(layer, key, data) {
     if (!this.id) return;
@@ -179,11 +233,14 @@ export class Calls {
   peer(streamer) {
     let r = this.remote.get(streamer);
     if (r) return r;
-    const canvas = Object.assign(document.createElement('canvas'), { width: WIDTH, height: HEIGHT });
+    const canvas = Object.assign(document.createElement('canvas'), { width: LONG, height: Math.round(LONG * 0.75) });
     r = { canvas, frames: 0, drawn: 0, lastFull: 0, lastSmall: 0, small: null };
     const drawer = (full) => (frame) => {
       // A small picture is drawn only while no full one has come for a while.
       if (full || performance.now() - r.lastFull > 500) {
+        // The canvas takes the picture's own shape (upright, or wide).
+        const [w, hgt] = sized(frame.displayWidth, frame.displayHeight, LONG);
+        if (canvas.width !== w || canvas.height !== hgt) { canvas.width = w; canvas.height = hgt; this.onshape?.(); }
         canvas.getContext('2d').drawImage(frame, 0, 0, canvas.width, canvas.height);
         r.drawn++;
       }
@@ -210,10 +267,15 @@ export class Calls {
       buffer.copyToChannel(plane, ch);
     }
     data.close();
+    // Kept LEAD ahead of now: behind (nothing came for a while), it starts
+    // again there; more than LATE ahead (a burst, or two clocks apart), this
+    // piece is let go so the sound catches up - the delay never grows.
+    const now = ctx.currentTime;
+    if (this.playAt < now + 0.02) this.playAt = now + LEAD;
+    if (this.playAt > now + LATE) { this.dropped = (this.dropped || 0) + 1; return; }
     const src = ctx.createBufferSource();
     src.buffer = buffer;
     src.connect(ctx.destination);
-    this.playAt = Math.max(this.playAt, ctx.currentTime + 0.05);
     src.start(this.playAt);
     this.playAt += buffer.duration;
   }
@@ -242,7 +304,9 @@ export class Calls {
       for (const d of [r.video, r.small, r.audio]) try { d?.close(); } catch { /* closed */ }
     this.remote.clear();
     try { await this.ctx?.close(); } catch { /* closed */ }
-    this.ctx = null;
+    try { await this.micCtx?.close(); } catch { /* closed */ }
+    this.ctx = this.micCtx = null;
+    this.playAt = 0;
     if (id) { try { this.s.app.leaveCall(id); } catch { /* over */ } await this.s.pump(); }
   }
   // The other side hung up: what is open here closes too.

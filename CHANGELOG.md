@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.4 (2026-10-16): calls that sound right and look like p-chat
+
+- Call sound no longer drifts later and later: it is played a little ahead
+  of now (0.12 s) and catches up when it falls behind, instead of queueing
+  every late piece. Its sound starts in the tap that begins or answers the
+  call (a phone kept it paused till then). Where the browser has no track
+  frames (Safari), the microphone is taken by an audio worklet.
+- A picture keeps its shape: a phone held upright sends an upright picture,
+  shown large, never squeezed into a wide box.
+- The call screen in the sleeve's look, light and dark: the chat's heading,
+  the other side in the court's frame, you in its corner, keys that press
+  in; calling, a disc going round the stripes' colours with rings going out.
+- Table tennis: the picture may run 0.4 s ahead of what both have agreed
+  (was 0.2 s), so your own paddle no longer waits on the other phone.
+- The send key with nothing written records a voice note. What you send
+  comes into sight. More room under the last message.
+- The attach key's + and × no longer swap.
+- Putting p-chat on the Home Screen: on an iPhone in Safari (which offers no
+  install prompt), Chats shows the two steps; where the browser has its
+  own Install, its button. Not in the installed app; gone once dismissed.
+
 ## v1.3 (2026-10-16): the keyboard stays where you put it
 
 - A message coming in no longer raises the keyboard: the chat's messages

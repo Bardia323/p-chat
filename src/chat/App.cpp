@@ -3221,7 +3221,7 @@ void App::open_game(Game& g) {
     engine_->send(g.net, {g.net + ".configure", config});
     engine_->send(g.game, {g.game + ".publish", {}});
     settle();
-    g.prediction = std::make_unique<sg::net::Prediction>(court_forecast(graph_.state(g.game)), 12, 128,
+    g.prediction = std::make_unique<sg::net::Prediction>(court_forecast(graph_.state(g.game)), court_lead, 128,
                                                          std::vector<std::uint8_t>{1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0});
     g.prediction->reset(0, court_frame(graph_.state(g.game)));
     if (live_) live_->connect(g.opponent);

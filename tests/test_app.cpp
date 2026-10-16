@@ -850,7 +850,7 @@ int main() {
         for (const auto& [e, s] : seen_a)
             if (seen_f.count(e)) same &= seen_f[e] == s;
         CHECK_MSG(same, "both sides see the same score at every step");
-        CHECK(va.lead <= 12);
+        CHECK(va.lead <= court_lead);
         A.app->leave_game(game);
         for (int i = 0; i < 4; ++i) { A.step(); F.step(); }
         CHECK_MSG(F.heard("game_over", c) && A.app->games().empty() && F.app->games().empty(), "over for both");

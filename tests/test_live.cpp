@@ -104,7 +104,7 @@ int main() {
     CHECK_MSG(epochs * 6 >= 1800 * 6 / 10, "the court keeps at least 60% of real time over a link two frames long");
     CHECK_MSG(same, "both worlds play the very same game, step for step");
     CHECK_MSG(frames_a[epochs][10] > 0 || frames_a[epochs][8] + frames_a[epochs][9] > 0, "the ball was hit or a point was scored");
-    CHECK_MSG(lead <= 12, "the prediction stays within its lead");
+    CHECK_MSG(lead <= court_lead, "the prediction stays within its lead");
     CHECK_MSG(sg::verify(a.graph).ok() && sg::verify(b.graph).ok(), "the laws still hold after the game");
     a.engine->send("contacts", {"game.end", game_args(conv, id)});
     a.engine->tick(0), a.engine->tick(0);

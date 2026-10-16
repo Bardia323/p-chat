@@ -15,6 +15,10 @@ namespace chat {
 sg::dsl::Natives game_natives();
 // A step of the court: what both devices move it by, whatever their frames.
 constexpr double court_step = 1.0 / 60.0;
+// How far the picture may run ahead of what both have agreed, in court frames
+// (0.4 s): past a phone link's round trip and a step of six, so a player's own
+// paddle never waits for the other's answer to move.
+constexpr std::size_t court_lead = 24;
 // The court's rules: walls, paddles, points.
 void bounce(sg::Params& left, sg::Params& right, sg::Params& ball, sg::Params& score);
 // The court as numbers (ball x y vx vy, left y vy, right y vy, scores, hits),

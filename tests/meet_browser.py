@@ -173,6 +173,19 @@ def run(args, serve, launch):
             def said(page, conv):
                 return f"window.pchat.store.messages('{conv}').then(ms => ms.filter(m => !m.hidden).map(m => m.body && new TextDecoder().decode(m.body)))"
 
+            # ---- 0. an iPhone in Safari: the way to the Home Screen, shown on Chats, gone when dismissed ----
+            ictx = browser.new_context(viewport={'width': 390, 'height': 844},
+                                       user_agent='Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1')
+            I = ictx.new_page()
+            I.goto(url + '/index.html')
+            wait(I, "!!document.querySelector('[data-test=install]')", 60, 'an iPhone in Safari is shown how to put p-chat on its Home Screen')
+            I.screenshot(path=str(work / 'install.png'))
+            I.click('[data-test=install-later]')
+            I.reload()
+            wait(I, "window.pchat && window.pchat.state.screen === 'contacts'", 60, 'reloaded')
+            check(not I.query_selector('[data-test=install]'), 'dismissed, it stays dismissed')
+            ictx.close()
+
             # ---- 1. in person, relays off on both ----
             M = phone('Mina')
             N = phone('Noor')
@@ -202,7 +215,14 @@ def run(args, serve, launch):
             check(M.evaluate("document.getElementById('app').classList.contains('fitted') && Math.abs(document.getElementById('app').getBoundingClientRect().height - innerHeight) < 2"),
                   'the chat fits what can be seen; its messages scroll inside it')
             check('linked' in M.text_content('[data-test=reach]'), 'the chat says the phones are linked')
-            M.evaluate("document.querySelector('[data-test=message]').value = ''")
+            M.evaluate("(() => { const i = document.querySelector('[data-test=message]'); i.value = ''; i.dispatchEvent(new Event('input')); })()")
+            check(M.get_attribute('[data-test=send]', 'data-shows') == 'voice', 'nothing written: the send key records a voice note')
+            M.fill('[data-test=message]', 'said-and-seen-SS1')
+            check(M.get_attribute('[data-test=send]', 'data-shows') == 'send', 'something written: it sends')
+            M.evaluate("document.querySelector('.tape').scrollTop = 0")
+            M.click('[data-test=send]')
+            wait(M, "(() => { const t = document.querySelector('.tape'); return [...t.querySelectorAll('[data-test=mine]')].some(e => e.textContent.includes('said-and-seen-SS1')) "
+                    "&& t.scrollHeight - t.scrollTop - t.clientHeight < 4; })()", 20, 'what was sent is in sight: the list goes to its end')
             wait(M, "window.pchat.session.pairing === null", 60, 'the link made to pair is closed once their own is up')
             M.evaluate("window.pchat.ui.screen('invite', {invite: null})")
             M.click('[data-test=scan-code]')
