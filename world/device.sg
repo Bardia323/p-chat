@@ -1,0 +1,18 @@
+# A pinned device of a conversation, as the device.add edit (and contact.add,
+# for the first ones) adds it: DEV is its element (d and its id), ID its id,
+# SIGN and AGREE its public keys, SIDE 0 for the owner's side, 1 for the
+# friend's. high, seen and lost are its window of sequences (chat/Window.hpp);
+# mailbox, whether it said it takes mail (its signed delivery message).
+
+state CONV {
+    element DEV : device {
+        id = "ID"
+        sign = "SIGN"
+        agree = "AGREE"
+        side = int(SIDE)
+        high = int(0)
+        seen = int(9223372036854775807)
+        lost = int(0)
+        mailbox = int(MAILBOX)
+    }
+}

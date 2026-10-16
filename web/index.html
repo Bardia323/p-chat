@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self' blob: wss: ws://127.0.0.1:* ws://localhost:* https://fcm.googleapis.com https://*.push.services.mozilla.com https://web.push.apple.com https://*.notify.windows.com; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="theme-color" content="#d4382a">
+<title>p-chat</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="manifest" href="app.webmanifest">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="p-chat">
+</head>
+<body>
+<div id="app" aria-live="polite">
+  <main><div class="head"><p class="caps">Loading</p></div></main>
+</div>
+<noscript><p style="padding:20px">p-chat needs JavaScript and a recent browser.</p></noscript>
+<script src="sgchat.js"></script>
+<script type="module" src="ui.js"></script>
+</body>
+</html>

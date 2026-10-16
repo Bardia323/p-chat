@@ -1,0 +1,54 @@
+# A conversation, as the contact.add edit makes it: CONV is its state's
+# name (c_ and the conversation id), ID the id itself. Its devices are
+# added beside it from world/device.sg, one element each.
+#
+# What it is: its kind (0 two sides, 1 a group, 2 a channel), what this device calls the other side (its own choice: the
+# one invited names the one who invited), what they call themselves, whose
+# side it is on, the committee generation it is at, and
+# on its thread how many messages are unread and how many it has sent (its
+# own sequence). What it does: post says what is going out; receive counts
+# what came in, from which device, into that device's window; read clears
+# the unread count; delivery says whether this device takes mail (its own
+# opt-in, `mailbox`); its options say whether a lost device may be
+# replaced (`recovery`) and after how many seconds messages disappear
+# (`disappear`, 0 never). The messages themselves are content, kept outside.
+
+extern state contacts
+
+state CONV {
+    conversation = "ID"
+    generation = int(0)
+    side = int(0)
+    mailbox = int(0)
+    kind = int(0)
+    recovery = int(1)
+    disappear = int(0)
+    element thread {
+        unread = int(0)
+        sent = int(0)
+    }
+    # Where a game and a whiteboard are shown, embedded as states of their own.
+    element table : portal {
+        open = false
+    }
+    element board : portal {
+        open = false
+    }
+    thread -> thread : post(kind) on CONV.post native chat_post
+    thread -> thread : receive(sequence) on CONV.receive native chat_receive
+    thread -> thread : read on CONV.read native chat_clear
+    thread -> thread : rename(name) on CONV.rename native chat_rename
+    thread -> thread : deliver(mode) on CONV.delivery native chat_delivery
+    thread -> thread : options(recovery) on CONV.options native chat_options
+    say CONV.outgoing
+}
+
+port CONV.post
+port CONV.receive
+port CONV.read
+port CONV.rename
+port CONV.delivery
+port CONV.options
+
+transition contacts -[contacts.open]-> CONV when arg.conversation == "ID"
+transition CONV -[CONV.close]-> contacts

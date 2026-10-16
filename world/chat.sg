@@ -1,0 +1,67 @@
+# The messenger's world: a book of contacts, and a conversation for each.
+#
+# `contacts` is the one state that is always there. It is needed for two
+# reasons, and has nothing else in it: every conversation must be reachable
+# (a conversation is opened from the book, and closes back to it), and a
+# structural change is an edit some state asks for - a conversation cannot
+# ask for its own making. Conversations are made by the contact.add edit
+# from world/conversation.sg, never declared here.
+#
+# A call is made the same way (call.start, from world/call.sg), and ended
+# by call.end; it is reached from its conversation.
+#
+# Ports are where the outside reaches in: the app's session sends what a
+# verified handoff or pairing decided (the edits) and the UI opens and
+# closes conversations by events. Nothing here keeps a clock.
+
+initial contacts
+
+state contacts {
+    element book
+    book -> book : add(conversation) on contact.add native chat_ask
+    book -> book : remove(conversation) on contact.remove native chat_ask
+    book -> book : join(conversation) on device.add native chat_ask
+    book -> book : revoke(conversation) on device.revoke native chat_ask
+    book -> book : swap(conversation) on device.replace native chat_ask
+    book -> book : call(conversation) on call.start native chat_ask
+    book -> book : hang(conversation) on call.end native chat_ask
+    book -> book : play(conversation) on game.start native chat_ask
+    book -> book : stop(conversation) on game.end native chat_ask
+    book -> book : draw(conversation) on board.open native chat_ask
+    book -> book : put_away(conversation) on board.close native chat_ask
+    say contact.add.edit
+    say contact.remove.edit
+    say device.add.edit
+    say device.revoke.edit
+    say device.replace.edit
+    say call.start.edit
+    say call.end.edit
+    say game.start.edit
+    say game.end.edit
+    say board.open.edit
+    say board.close.edit
+}
+
+port contacts event contact.add
+port contacts event contact.remove
+port contacts event device.add
+port contacts event device.revoke
+port contacts event device.replace
+port contacts event call.start
+port contacts event call.end
+port contacts event game.start
+port contacts event game.end
+port contacts event board.open
+port contacts event board.close
+
+edit contacts on contact.add.edit native contact_add
+edit contacts on contact.remove.edit native contact_remove
+edit contacts on device.add.edit native device_add
+edit contacts on device.revoke.edit native device_revoke
+edit contacts on device.replace.edit native device_replace
+edit contacts on call.start.edit native call_start
+edit contacts on call.end.edit native call_end
+edit contacts on game.start.edit native game_start
+edit contacts on game.end.edit native game_end
+edit contacts on board.open.edit native board_lay
+edit contacts on board.close.edit native board_fold

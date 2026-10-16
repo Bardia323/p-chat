@@ -1,0 +1,52 @@
+# A conversation's whiteboard, as the board.open edit makes it: BOARD is
+# the board's state (b_ and the conversation id), VIEW where its devices
+# look (v_ and the conversation id), TIME the board's time (u_ and the
+# conversation id), CONV the conversation, CONVID its id.
+#
+# The strokes are the conversation's own messages (`stroke`), content kept
+# outside the world; the board counts them and says who leads. Where each
+# device looks is a participant of VIEW (its observation said at VIEW's
+# port as it moves); one that leads is pinned, and the engine's Reconcile -
+# each device solving the same problem from the same observations, none the
+# authority - brings every view to it. The board is shown in its
+# conversation, embedded at its `board` portal.
+
+extern state CONV
+state TIME : temporal
+
+state BOARD {
+    conversation = "CONVID"
+    strokes = int(0)
+    leader = ""
+    element sheet
+    sheet -> sheet : stroke on BOARD.stroke native board_stroke
+    sheet -> sheet : lead(peer) on BOARD.lead native board_lead
+    say BOARD.led
+}
+
+state VIEW {
+    lambda = 1.0
+    iterations = int(64)
+    relaxation = 0.9
+    element control
+@VIEWERS@
+    control -> control : observe(peer) on VIEW.observe native view_observe
+    control -> control : lead(peer) on VIEW.lead native view_lead
+    control -> control : solve(dt) on VIEW.solve native view_solve
+    say VIEW.agreed
+}
+
+functor BOARD_lead : BOARD -> VIEW {
+    object sheet -> control
+    event BOARD.led -> VIEW.lead
+}
+
+port BOARD.stroke
+port BOARD.lead
+port VIEW.observe
+
+drive TIME -> VIEW.solve
+    keeps always
+
+embed CONV.board -> BOARD
+    focus false

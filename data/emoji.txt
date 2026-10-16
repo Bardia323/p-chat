@@ -1,0 +1,256 @@
+🐀	rat
+🐁	mouse
+🐂	ox
+🐃	water buffalo
+🐄	cow
+🐅	tiger
+🐆	leopard
+🐇	rabbit
+🐈	cat
+🐉	dragon
+🐊	crocodile
+🐋	whale
+🐌	snail
+🐍	snake
+🐎	horse
+🐏	ram
+🐐	goat
+🐑	sheep
+🐒	monkey
+🐓	rooster
+🐔	chicken
+🐕	dog
+🐘	elephant
+🐙	octopus
+🐚	spiral shell
+🐛	bug
+🐜	ant
+🐝	honeybee
+🐞	lady beetle
+🐟	fish
+🐠	tropical fish
+🐡	blowfish
+🐢	turtle
+🐣	hatching chick
+🐤	baby chick
+🐥	front-facing baby chick
+🐦	bird
+🐧	penguin
+🐨	koala
+🐩	poodle
+🐫	bactrian camel
+🐬	dolphin
+🐸	frog face
+🌰	chestnut
+🌱	seedling
+🌲	evergreen tree
+🌳	deciduous tree
+🌴	palm tree
+🌵	cactus
+🌷	tulip
+🌸	cherry blossom
+🌹	rose
+🌺	hibiscus
+🌻	sunflower
+🌼	blossom
+🌽	ear of maize
+🌾	ear of rice
+🌿	herb
+🍀	four leaf clover
+🍁	maple leaf
+🍂	fallen leaf
+🍃	leaf fluttering in wind
+🍄	mushroom
+🍅	tomato
+🍆	aubergine
+🍇	grapes
+🍈	melon
+🍉	watermelon
+🍊	tangerine
+🍋	lemon
+🍌	banana
+🍍	pineapple
+🍎	red apple
+🍏	green apple
+🍐	pear
+🍑	peach
+🍒	cherries
+🍓	strawberry
+🍔	hamburger
+🍕	slice of pizza
+🍖	meat on bone
+🍗	poultry leg
+🍘	rice cracker
+🍙	rice ball
+🍚	cooked rice
+🍛	curry and rice
+🍜	steaming bowl
+🍝	spaghetti
+🍞	bread
+🍟	french fries
+🍠	roasted sweet potato
+🍡	dango
+🍢	oden
+🍣	sushi
+🍤	fried shrimp
+🍥	fish cake with swirl design
+🍦	soft ice cream
+🍧	shaved ice
+🍨	ice cream
+🍩	doughnut
+🍪	cookie
+🍫	chocolate bar
+🍬	candy
+🍭	lollipop
+🍮	custard
+🍯	honey pot
+🍰	shortcake
+🍱	bento box
+🍲	pot of food
+🍳	cooking
+🍴	fork and knife
+🍵	teacup without handle
+🍶	sake bottle and cup
+🍷	wine glass
+🍸	cocktail glass
+🍹	tropical drink
+🍺	beer mug
+🍻	clinking beer mugs
+🍼	baby bottle
+🎀	ribbon
+🎁	wrapped present
+🎂	birthday cake
+🎃	jack-o-lantern
+🎄	christmas tree
+🎅	father christmas
+🎆	fireworks
+🎇	firework sparkler
+🎈	balloon
+🎉	party popper
+🎊	confetti ball
+🎋	tanabata tree
+🎌	crossed flags
+🎍	pine decoration
+🎎	japanese dolls
+🎏	carp streamer
+🎐	wind chime
+🎑	moon viewing ceremony
+🎒	school satchel
+🎓	graduation cap
+🎠	carousel horse
+🎡	ferris wheel
+🎢	roller coaster
+🎣	fishing pole and fish
+🎤	microphone
+🎥	movie camera
+🎧	headphone
+🎨	artist palette
+🎩	top hat
+🎪	circus tent
+🎫	ticket
+🎬	clapper board
+🎭	performing arts
+🎮	video game
+🎯	direct hit
+🎰	slot machine
+🎱	billiards
+🎲	game die
+🎳	bowling
+🎴	flower playing cards
+🎷	saxophone
+🎸	guitar
+🎹	musical keyboard
+🎺	trumpet
+🎻	violin
+🎼	musical score
+🎽	running shirt with sash
+🎾	tennis racquet and ball
+🎿	ski and ski boot
+🏀	basketball and hoop
+🏁	chequered flag
+🏂	snowboarder
+🏃	runner
+🏄	surfer
+🚀	rocket
+🚟	suspension railway
+🚤	speedboat
+💡	electric light bulb
+💣	bomb
+💧	droplet
+💬	speech balloon
+💰	money bag
+💾	floppy disk
+💿	optical disc
+📀	dvd
+📌	pushpin
+📎	paperclip
+📖	open book
+📦	package
+📫	closed mailbox with raised flag
+📷	camera
+📻	radio
+🔋	battery
+🔌	electric plug
+🔍	left-pointing magnifying glass
+🔑	key
+🔒	lock
+🔔	bell
+🔖	bookmark
+🔥	fire
+🔧	wrench
+🔨	hammer
+🔭	telescope
+🔮	crystal ball
+🌈	rainbow
+🌋	volcano
+🌍	earth globe europe-africa
+🌙	crescent moon
+🌟	glowing star
+🌠	shooting star
+🌂	closed umbrella
+🌊	water wave
+🌀	cyclone
+🌐	globe with meridians
+🌕	full moon symbol
+🌑	new moon symbol
+🏐	volleyball
+🏑	field hockey stick and ball
+🏓	table tennis paddle and ball
+🏸	badminton racquet and shuttlecock
+🏹	bow and arrow
+🏺	amphora
+🏮	izakaya lantern
+🏠	house building
+🏯	japanese castle
+🏰	european castle
+🗻	mount fuji
+🗼	tokyo tower
+🗽	statue of liberty
+🗿	moyai
+🚲	bicycle
+🛎	bellhop bell
+🛸	flying saucer
+🛶	canoe
+🛴	scooter
+🛵	motor scooter
+🥊	boxing glove
+🥁	drum with drumsticks
+🥐	croissant
+🥑	avocado
+🥕	carrot
+🥝	kiwifruit
+🥥	coconut
+🥦	broccoli
+🥭	mango
+🦀	crab
+🦁	lion face
+🦄	unicorn face
+🦅	eagle
+🦆	duck
+🦇	bat
+🦉	owl
+🦊	fox face
+🦋	butterfly
+🦎	lizard
+🦏	rhinoceros
+🦒	giraffe face

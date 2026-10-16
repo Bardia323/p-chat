@@ -1,0 +1,38 @@
+# A call, as the call.start edit makes it: CALL is its state's name (k_ and
+# the call id), ID the id itself, CONV the conversation it belongs to.
+#
+# What it is: how it goes (`mode`: 0 everyone to everyone, 1 a swarm, 2
+# speakers through a fan-out tree), the generation of who is in it, how
+# many are, and the finalized roster epoch its last plan was made from.
+# Its stream is cut in stripes, one element each (the edit writes them in
+# at the mark below), participants of the engine's Placement: their
+# `solver` is the viewer that forwards that stripe; neighbouring stripes are constraints,
+# so a viewer forwards stripes side by side. Who is in it and who forwards
+# what change only by edits, after the roster's epoch and handoff are
+# verified outside the world. The media is content, carried outside.
+
+extern state CONV
+
+state CALL {
+    call = "ID"
+    conversation = "CONVID"
+    mode = int(0)
+    generation = int(0)
+    viewers = int(0)
+    placed = int(0)
+    element roster
+    roster -> roster : roster(generation) on CALL.roster native chat_ask
+    roster -> roster : place(generation) on CALL.place native chat_ask
+    say CALL.roster.edit
+    say CALL.place.edit
+@STRIPES@
+}
+
+port CALL.roster
+port CALL.place
+
+edit CALL on CALL.roster.edit native call_roster
+edit CALL on CALL.place.edit native call_place
+
+transition CONV -[CONV.join]-> CALL when arg.call == "ID"
+transition CALL -[CALL.leave]-> CONV

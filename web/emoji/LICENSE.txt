@@ -1,0 +1,7 @@
+The 256 fingerprint pictures in this folder are Twemoji
+(https://github.com/jdecked/twemoji), copyright Twitter, Inc. and other
+contributors, licensed under CC-BY 4.0 (https://creativecommons.org/licenses/by/4.0/).
+Optimized SVGs from the @twemoji/svg package (MIT). Unchanged.
+
+They are shipped with p-chat so that both phones of a pairing draw the
+same four pictures, whatever emoji font each has.

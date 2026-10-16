@@ -1,0 +1,105 @@
+# Changelog
+
+## v1.1 (2026-10-16): no middleman (protocol 10)
+
+- A new contact needs one side only: they scan your code, or open your
+  link, and tap Pair (the words are in the link). With no relay at all, the
+  two phones pair side by side: theirs shows a code back, and yours scans
+  it - a link of their own, the pairing going over it, checked as ever.
+- Contacts carry for each other: a phone linked with two of your contacts
+  passes their signals on, so two phones that lost their link find each
+  other again with no relay, and keeps sealed messages for a contact who is
+  away until it asks. It cannot read them; it does see who talks to whom
+  among its contacts (Settings → Carry for contacts: on or off).
+- Relays can be turned off altogether (Settings → Relay). Then invites are
+  in person only, and no notifications are sent.
+- About: four short sections, one picture each - what it does, how it stays
+  private, no middleman, good to know.
+- A link or code opened while p-chat is already open is taken at once.
+- No decorative word at the foot of each screen; Chats keeps its bar of buttons.
+- **Breaking**: an in-person invite (no relay) and messages of content
+  version 10 are not read by p-chat 1.0 (protocol 9).
+
+## v1 (2026-10-15)
+
+- A lost phone can be replaced. Another member invites the new phone; the
+  others in the chat approve after checking its four pictures in person or
+  by voice; the lost phone, if it still exists, is told and has a day to
+  refuse. The new phone can be given the history - all, the last 30 days or
+  none - and takes only messages the chat had agreed on.
+- Per chat: "No recovery" (a lost phone's history is gone with it) and
+  messages that disappear after an hour, a day or a week - from every
+  phone, from what waits to be sent, and from the relay.
+- Notifications that say nothing: a phone that cannot be reached at once is
+  woken by its contact's phone, and shows only the symbol its owner picked
+  for that chat - no name, no words. The relay holds no key for it. On an
+  iPhone, Settings shows how to put p-chat on the Home Screen first; p-chat
+  has a Home Screen icon of its own.
+- Bots: a program on a server with a key of its own, paired like a contact
+  and removed like any device. The echo bot ships with p-chat.
+- Calls and going live. Call a contact or a group (everyone to everyone up
+  to five phones, through relays beyond); go live in a group, and its
+  members watch as a swarm, each phone passing pieces on as it can. Every
+  frame is checked against what its speaker signed before it plays; a new
+  key whenever someone leaves.
+- Play table tennis with a contact, and draw on a whiteboard together: every
+  stroke a message, the others' pens moving live, and "Follow me" to bring
+  everyone's view to yours.
+- Updates you can check: each release of p-chat is signed by a committee
+  of its owner's devices and linked to the one before; a phone takes only
+  what follows the release it runs, shows "Update ready", and switches the
+  next time it opens. A phone behind takes a newer release from a contact's
+  phone. Two different releases signed as one version are shown to everyone.
+- p-chat opens on Chats, ready for the first contact; your name is asked
+  on the Invite screen. No server address to type anywhere: invites use the
+  one p-chat came with (your own, if you run one, under Settings → Advanced,
+  checked before it is used).
+- About, in pictures and short sentences: what you can do, how it works
+  (a relay is like a courier: it carries the locked box to the right door,
+  but it has no key), why no server is in charge (phones talk directly; any
+  relay will do; run your own), why it is safe, and what it cannot hide. It
+  shows at once - also in a browser where p-chat's background worker never
+  started (it waited for it before, and showed nothing).
+- "Relay" everywhere, never "server". Tape tennis is now table tennis.
+- An open attachment tray stays open when a message arrives.
+- An update offered while p-chat's background worker is being replaced is
+  asked for again instead of lost.
+- Long messages now go phone to phone too, and a phone that was away when
+  a chat's secret changed is still found.
+- Groups and channels; photos, files, stickers and voice notes; a choice per
+  contact between "live only" (the relay keeps nothing) and "mailbox too";
+  used keys wiped as soon as they are spent.
+
+## v0 (2026-10-15)
+
+The first version of p-chat, the messenger, and sgchat, its project.
+
+- Pair two phones with a QR code and six spoken words, in a browser tab, with
+  no account. The phone that was invited chooses what to call the one who
+  invited it; anyone can rename a contact on their own phone.
+- Messages go phone to phone over WebRTC when both are open, else through a
+  relay's mailbox that holds only ciphertext for up to 14 days.
+- Every message is end-to-end encrypted under a Double Ratchet per pair of
+  devices, signed by its sending device, and accepted only through the
+  engine's `Integrity`: duplicates dropped, replays refused, two different
+  messages under one number kept as evidence and shown.
+- Each conversation's devices are an engine `Committee`. A further device
+  joins, and a device is removed, only by a handoff the existing devices
+  endorse; the conversation's secret changes after a removal.
+- The two sides regularly agree on the exact list of messages so far
+  (engine `Agreement` epochs, chained): a dropped, changed or reordered
+  message shows. A message that never arrives is shown as missing.
+- History is kept encrypted on the phone under a key that cannot be copied
+  out of the browser.
+- The app is served from a signed bundle checked by a service worker; the
+  About screen shows its fingerprint. The host remains trusted on every load.
+- A dark look (the black VHS sleeve), following the phone or chosen per browser;
+  in the dark a pressed key's shadow is a chromatic split that closes as it goes in.
+- The p-chat wordmark (its dash the tape's stripes), plain screen names, and
+  motion that answers what you do: screens slide in from where they lie,
+  new messages pop from their side, the send key fires, counts bump. None
+  for anyone who asked their phone for less motion.
+- Fingerprint pictures ship with the app: the same drawing on both phones.
+- Messages and names in any language, right-to-left included.
+- The relay keeps everything in memory, logs nothing, and can wake an
+  Android phone with an empty push (optional).

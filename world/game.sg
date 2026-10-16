@@ -1,0 +1,145 @@
+# A game of two in a conversation (tape tennis), as the game.start edit
+# makes it: GAME is the court's state (g_ and the game id), NET its
+# network (n_ and the game id), TIME the game's time (t_ and the game id),
+# CONV the conversation, ID the game id.
+#
+# The same court on both players' devices; neither is the authority. Each
+# step, each player's control (up, down, still) is published into the
+# network, where it is that player's participant's pinned coordinate; the
+# shared constraint makes both participants agree, so each device learns
+# the other's control from the engine's Distributed reconciliation (its
+# boundary packets carried between the two devices outside the world), and
+# when both have settled the step is committed and the court moves - the
+# same motion on both, by the same declared arrows: `steps` steps of 1/60 s
+# with the controls agreed (so the court keeps near real time though an
+# agreement takes a round trip). The game's time is a
+# state of its own, made with it: the court and its network each step on a
+# line of their own there. The court is shown in its conversation,
+# embedded at its `table` portal.
+
+extern state CONV
+state TIME : temporal
+
+state GAME {
+    game = "ID"
+    player = int(0)
+    epoch = int(0)
+    steps = int(6)
+    step = int(0)
+    left_score = int(0)
+    right_score = int(0)
+    hits = int(0)
+    element control
+    element p0 {
+        publishes = true
+        value_0 = 0.0
+        value_1 = 0.0
+    }
+    element p1 {
+        publishes = false
+        value_0 = 0.0
+        value_1 = 0.0
+    }
+    element left {
+        x = -0.88
+        y = 0.0
+        vy = 0.0
+    }
+    element right {
+        x = 0.88
+        y = 0.0
+        vy = 0.0
+    }
+    element ball {
+        x = 0.0
+        y = 0.0
+        vx = 0.68
+        vy = 0.27
+    }
+    control -> control : configure on GAME.configure native game_configure
+    control -> control : input(move) on GAME.input native game_input
+    control -> control : publish on GAME.publish native game_publish
+    control -> control : corrected on GAME.corrected native game_corrected
+    control -> control : step(dt) on GAME.step native game_step
+    control -> control : commands on GAME.motion native game_commands
+    left -> left : move_left(duration) on GAME.motion { y = y + vy * duration }
+    right -> right : move_right(duration) on GAME.motion { y = y + vy * duration }
+    ball -> ball : move_ball(duration) on GAME.motion { x = x + vx * duration y = y + vy * duration }
+    control -> control : bounce on GAME.motion native game_bounce
+    say GAME.published
+    say GAME.ready
+    say GAME.input.changed
+}
+
+state NET {
+    peer = "p0"
+    epoch = int(0)
+    generation = int(0)
+    round = int(0)
+    lambda = 1.0
+    diffusion_step = 0.5
+    iterations = int(32)
+    relaxation = 0.9
+    settle_rounds = int(2)
+    element control
+    element p0 : participant {
+        dim = int(2)
+        solver = "p0"
+        computes = true
+        observation_0 = 0.0
+        observation_1 = 0.0
+        weight = 0.0
+        pinned_0 = true
+        pinned_1 = false
+    }
+    element p1 : participant {
+        dim = int(2)
+        solver = "p1"
+        computes = false
+        observation_0 = 0.0
+        observation_1 = 0.0
+        weight = 0.0
+        pinned_0 = false
+        pinned_1 = true
+    }
+    element shared : constraint {
+        left = "p0"
+        right = "p1"
+        dim = int(2)
+    }
+    control -> control : configure on NET.configure native rally_configure
+    control -> control : begin on NET.begin native rally_begin
+    control -> control : receive on NET.receive native rally_receive
+    control -> control : solve(dt) on NET.solve native rally_solve
+    say NET.boundary
+    say NET.committed
+}
+
+functor GAME_publish : GAME -> NET {
+    object p0 -> p0 native game_publish_to
+    object p1 -> p1 native game_publish_to
+    event GAME.published -> NET.begin
+}
+functor GAME_correct : NET -> GAME {
+    object p0 -> p0 native game_correct
+    object p1 -> p1 native game_correct
+    event NET.committed -> GAME.corrected
+}
+functor GAME_motion : GAME -> GAME {
+    object control -> control
+    event GAME.ready -> GAME.motion
+}
+
+port GAME.configure
+port GAME.input
+port GAME.publish
+port NET.configure
+port NET.receive
+
+drive TIME -> NET.solve
+    keeps always
+drive TIME -> GAME.step
+    keeps always
+
+embed CONV.table -> GAME
+    focus false
