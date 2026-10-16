@@ -279,10 +279,18 @@ export class Session {
     const others = info.members.filter((m) => !m.self);
     return others.length > 0 && others.every((m) => this.app.liveWith(m.peer));
   }
+  // How the other devices are reached now, in a word: linked (directly), the
+  // relay, or not at all.
+  reachedBy(conv) {
+    const info = this.app.info(conv);
+    const others = info.members.filter((m) => !m.self);
+    if (others.length && others.every((m) => this.app.liveWith(m.peer))) return 'linked';
+    return this.relayOf(conv)?.up ? 'relay' : 'none';
+  }
   watchReach() {
     this.reach ??= new Map();
     for (const id of this.app.conversations()) {
-      const now = this.canSend(id);
+      const now = this.canSend(id) + ':' + this.reachedBy(id);
       if (this.reach.has(id) && this.reach.get(id) !== now) this.ui.changed(id);
       this.reach.set(id, now);
     }

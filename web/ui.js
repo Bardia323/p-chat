@@ -261,6 +261,22 @@ const ui = {
 
 const session = new Session(null, ui);
 
+// What can be seen: on a phone the keyboard covers the bottom of the screen
+// without making the page smaller (Safari), so a chat is fitted to the
+// visual viewport - its top and height - and keeps its newest message in sight.
+function fitToView() {
+  const vv = globalThis.visualViewport;
+  if (!vv) return;
+  const s = document.documentElement.style;
+  s.setProperty('--view-h', Math.round(vv.height) + 'px');
+  s.setProperty('--view-top', Math.round(vv.offsetTop) + 'px');
+  const tape = state.screen === 'chat' ? root.querySelector('.tape') : null;
+  if (tape?.dataset.end === '1') tape.scrollTop = tape.scrollHeight;
+}
+globalThis.visualViewport?.addEventListener('resize', fitToView);
+globalThis.visualViewport?.addEventListener('scroll', fitToView);
+fitToView();
+
 function show(name, data = {}) {
   if (state.screen === 'chat' && name !== 'chat' && state.conv) session.leave(state.conv);
   if (state.screen === 'game' && name !== 'game') { liveCourt?.stop(); liveCourt = null; }
@@ -268,6 +284,8 @@ function show(name, data = {}) {
   const from = DEPTH[state.screen] ?? 0, to = DEPTH[name] ?? 1;
   if (name !== state.screen || data.conv !== undefined) entering = to >= from ? 'from-right' : 'from-left';
   Object.assign(state, { screen: name, ...data });
+  // A chat fills what can be seen and no more: its messages scroll inside it.
+  root.classList.toggle('fitted', name === 'chat');
   const screens = { unsupported, unrecognized, pair: renderPair, contacts: renderContacts, chat: () => renderChat(true),
     invite: renderInvite, meet: renderMeet, devices: renderDevices, paired: renderPaired, about: renderAbout, error: renderError, settings: renderSettings,
     newgroup: renderNewGroup, replace: renderReplace, call: renderCall, game: renderGame, board: renderBoard };
@@ -489,34 +507,48 @@ async function renderChat(first) {
     onclick: () => { tray.classList.toggle('hidden'); attach.classList.toggle('open'); } });
   attach.append(svg('<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v14M3 10h14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>'));
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
-  // Drawn again over itself (a message came): what was typed, and an open
-  // tray, stay. Not carried into another chat.
-  const same = drawnChat === id && !!root.querySelector('[data-test=message]');
-  const focused = same && document.activeElement?.dataset?.test === 'message';
-  const draft = same ? root.querySelector('[data-test=message]').value : '';
-  const trayOpen = same && !!root.querySelector('[data-test=tray]:not(.hidden)');
   // Another screen came while this one was being made: it is not drawn over it.
   if (state.screen !== 'chat' || state.conv !== id) return;
-  draw(h('div', { class: 'chathead' },
-      h('button', { class: 'back', 'data-test': 'back', 'aria-label': 'Back', onclick: () => show('contacts') }, '◀'),
-      h('div', {}, h('h1', { 'data-test': 'chat-name', dir: 'auto' }, info.name), h('div', { class: 'sub' },
-        info.kind === 2 ? (info.member ? 'Your channel' : 'Channel · read only')
-          : info.kind === 1 ? info.members.length + ' devices · group' : info.members.length - 1 + (info.members.length === 2 ? ' device' : ' devices') + ' · sealed')),
-      info.member && info.kind !== 2 && Calls.supported() && !info.removed ? callKey(id) : null,
-      info.member && info.kind === 1 && Calls.supported() && !info.removed ? callKey(id, true) : null,
-      h('button', { class: 'label', 'data-test': 'devices', onclick: () => show('devices') }, 'Devices')),
-    h('main', {}, banners, tape),
-    info.kind === 2 && !info.member
-      ? h('div', { class: 'composer reader', 'data-test': 'read-only' }, h('p', { class: 'caps light' }, 'Only ' + (info.introduced || 'its publisher') + ' posts here'))
-      : h('div', { class: 'composer' }, stickers, tray, attach, input, key));
+  const chathead = h('div', { class: 'chathead' },
+    h('button', { class: 'back', 'data-test': 'back', 'aria-label': 'Back', onclick: () => show('contacts') }, '◀'),
+    h('div', {}, h('h1', { 'data-test': 'chat-name', dir: 'auto' }, info.name), h('div', { class: 'sub' },
+      info.kind === 2 ? (info.member ? 'Your channel' : 'Channel · read only')
+        : info.kind === 1 ? info.members.length + ' devices · group' : info.members.length - 1 + (info.members.length === 2 ? ' device' : ' devices') + ' · sealed',
+      info.kind === 2 ? null : h('span', { class: 'reach', 'data-test': 'reach' }, ' · ' + { linked: 'linked', relay: 'through the relay', none: 'not reachable now' }[session.reachedBy(id)]))),
+    info.member && info.kind !== 2 && Calls.supported() && !info.removed ? callKey(id) : null,
+    info.member && info.kind === 1 && Calls.supported() && !info.removed ? callKey(id, true) : null,
+    h('button', { class: 'label', 'data-test': 'devices', onclick: () => show('devices') }, 'Devices'));
+  const body = h('main', {}, banners, tape);
+  // Drawn again over itself (a message came): the heading and the messages
+  // are new; the composer is the one already there - never focused, never
+  // replaced - so the keyboard, what was typed and an open tray stay as they
+  // were. Only what may have changed of it is said again.
+  const kept = drawnChat === id ? root.querySelector('.composer') : null;
+  const was = root.querySelector('.tape');
+  const atEnd = !was || was.scrollHeight - was.scrollTop - was.clientHeight < 48;
+  if (kept && root.querySelector('.chathead') && root.querySelector('#app > main')) {
+    root.querySelector('.chathead').replaceWith(chathead);
+    root.querySelector('#app > main').replaceWith(body);
+    const ki = kept.querySelector('[data-test=message]');
+    if (ki) { ki.disabled = input.disabled; ki.placeholder = input.placeholder; }
+    for (const test of ['send', 'attach']) {
+      const k = kept.querySelector(`[data-test=${test}]`);
+      if (k) k.disabled = info.removed || cut;
+    }
+  } else {
+    draw(chathead, body,
+      info.kind === 2 && !info.member
+        ? h('div', { class: 'composer reader', 'data-test': 'read-only' }, h('p', { class: 'caps light' }, 'Only ' + (info.introduced || 'its publisher') + ' posts here'))
+        : h('div', { class: 'composer' }, stickers, tray, attach, input, key));
+    grow();
+  }
   drawnChat = id;
-  input.value = draft;
-  grow();
-  if (focused) input.focus();
-  if (trayOpen) { tray.classList.remove('hidden'); attach.classList.add('open'); }
   seenMsgs.add(id);
   void firstLook;
-  tape.scrollTop = tape.scrollHeight;
+  // The newest in sight, unless one had scrolled up to read.
+  tape.scrollTop = atEnd ? tape.scrollHeight : was.scrollTop;
+  tape.addEventListener('scroll', () => { tape.dataset.end = tape.scrollHeight - tape.scrollTop - tape.clientHeight < 48 ? '1' : ''; });
+  tape.dataset.end = atEnd ? '1' : '';
 }
 
 async function pictures(fp, test) {

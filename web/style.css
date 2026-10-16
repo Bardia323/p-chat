@@ -500,3 +500,9 @@ details.more .mono { word-break: break-all; }
 
 /* A call key where no relay could bring a dropped call back: said, not used. */
 .call-key.off { opacity: .4; }
+
+/* A chat: as tall as what can be seen (the keyboard's room taken away), its
+   messages scrolling inside it, the composer at its foot. */
+#app.fitted { position: fixed; top: var(--view-top, 0); left: 0; right: 0; margin: 0 auto; height: var(--view-h, 100dvh); min-height: 0; }
+#app.fitted > main { min-height: 0; overflow: hidden; }
+#app.fitted .tape { min-height: 0; overscroll-behavior: contain; }

@@ -189,6 +189,20 @@ def run(args, serve, launch):
             wait(N, f"{said(N, nm)}.then(s => s.includes('hello-in-person-IP1'))", 30, 'a message goes phone to phone')
             N.evaluate(f"window.pchat.session.send('{nm}', 'and-back-IP2')")
             wait(M, f"{said(M, mn)}.then(s => s.includes('and-back-IP2'))", 30, 'and one back')
+            # A message coming in: the chat is drawn again, but the composer is the same one,
+            # not focused (no keyboard raised); the chat fits the screen and says how they are reached.
+            M.evaluate(f"window.pchat.ui.screen('chat', {{conv: '{mn}'}})")
+            wait(M, "document.querySelector('[data-test=chat-name]')?.textContent === 'Noor'", 20, 'the chat opens')
+            M.evaluate("(() => { const i = document.querySelector('[data-test=message]'); i.__kept = 1; i.value = 'half-typed'; i.blur(); })()")
+            N.evaluate(f"window.pchat.session.send('{nm}', 'while-reading-WR1')")
+            wait(M, "Array.from(document.querySelectorAll('[data-test=theirs]')).some(e => e.textContent.includes('while-reading-WR1'))", 30,
+                 'a message comes in while the chat is open')
+            check(M.evaluate("(() => { const i = document.querySelector('[data-test=message]'); return i.__kept === 1 && i.value === 'half-typed' && document.activeElement !== i; })()"),
+                  'the composer is the same, what was typed stays, and nothing raised the keyboard')
+            check(M.evaluate("document.getElementById('app').classList.contains('fitted') && Math.abs(document.getElementById('app').getBoundingClientRect().height - innerHeight) < 2"),
+                  'the chat fits what can be seen; its messages scroll inside it')
+            check('linked' in M.text_content('[data-test=reach]'), 'the chat says the phones are linked')
+            M.evaluate("document.querySelector('[data-test=message]').value = ''")
             wait(M, "window.pchat.session.pairing === null", 60, 'the link made to pair is closed once their own is up')
             M.evaluate("window.pchat.ui.screen('invite', {invite: null})")
             M.click('[data-test=scan-code]')

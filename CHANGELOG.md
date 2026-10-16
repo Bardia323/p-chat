@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3 (2026-10-16): the keyboard stays where you put it
+
+- A message coming in no longer raises the keyboard: the chat's messages
+  are drawn again, its composer is left as it is (what was typed, the tray).
+- A chat fits what can be seen: when the keyboard opens, the messages make
+  room and scroll inside the chat, the newest in sight - not the whole page
+  sliding up.
+- The chat says how the other phone is reached now: linked, through the
+  relay, or not reachable now.
+
 ## v1.2 (2026-10-16): a relay that is always there, and nothing sent that cannot arrive
 
 - The public p-chat has a relay by default, on Cloudflare (`relay/worker`):
