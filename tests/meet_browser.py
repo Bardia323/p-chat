@@ -20,6 +20,23 @@ ROOT = Path(__file__).resolve().parents[1]
 FAILS = []
 
 # Every WebSocket a page opens, counted: a relay is the only thing p-chat opens one to.
+# Every WebRTC connection's life, for looking when a link is lost: when made,
+# each state it passes, and who closed it.
+WATCH_RTC = """(() => {
+  const P = window.RTCPeerConnection;
+  window.__rtc = [];
+  window.RTCPeerConnection = class extends P {
+    constructor(c) {
+      super(c);
+      const me = { n: window.__rtc.length, t0: Date.now(), states: [], closed: null };
+      window.__rtc.push(me);
+      this.addEventListener('connectionstatechange', () => me.states.push([Math.round((Date.now() - me.t0) / 1000), this.connectionState]));
+      this.__me = me;
+    }
+    close() { if (!this.__me.closed) this.__me.closed = [Math.round((Date.now() - this.__me.t0) / 1000), (new Error().stack || '').split('\\n').slice(2, 6).join(' | ')]; return super.close(); }
+  };
+})();"""
+
 COUNT_SOCKETS = """(() => {
   const W = window.WebSocket;
   window.__sockets = [];
@@ -81,9 +98,13 @@ def run(args, serve, launch):
         with sync_playwright() as p:
             browser = launch(p, args.browser)
 
-            def phone(name):
+            def phone(name, wrapped=False):
                 ctx = browser.new_context(viewport={'width': 390, 'height': 844}, permissions=['camera'])
                 ctx.add_init_script(COUNT_SOCKETS)
+                ctx.add_init_script(WATCH_RTC)
+                if wrapped:
+                    # As a browser that cannot keep an Ed25519/X25519 key in IndexedDB (an iPhone's): kept wrapped.
+                    ctx.add_init_script('window.__pchatWrapKeys = true;')
                 page = ctx.new_page()
                 page.errors = []
                 page.on('pageerror', lambda e: page.errors.append(f'{e.name}: {e.message}'))
@@ -102,7 +123,6 @@ def run(args, serve, launch):
                 """The owner shows its code and the other opens it. With a relay that is all; with none,
                 the other shows a code back and the owner scans it."""
                 owner.evaluate("window.pchat.ui.screen('invite', {invite: null})")
-                owner.fill('[data-test=name]', owner.name)
                 owner.click('[data-test=kind-code]')
                 owner.wait_for_selector('[data-test=qr]', timeout=20000)
                 link = owner.get_attribute('[data-test=qr]', 'data-link')
@@ -110,7 +130,6 @@ def run(args, serve, launch):
                 check(read == link and '#d1.' in link, f'{owner.name}\'s code reads back as its link ({len(link)} characters)')
                 other.goto(read)
                 wait(other, "window.pchat && window.pchat.state.screen === 'meet'", 60, f'{other.name}: the code opens p-chat to pair in person')
-                other.fill('[data-test=name]', other_name)
                 if mail:
                     other.check('[data-test=mail]')
                 if one_side:
@@ -123,12 +142,19 @@ def run(args, serve, launch):
                     other.wait_for_selector('[data-test=answer-qr]', timeout=20000)
                     code = other.get_attribute('[data-test=answer-qr]', 'data-code')
                     check(other.evaluate(READ_QR, '[data-test=answer-qr]') == code, f'{other.name}\'s code back reads as its answer ({len(code)} characters)')
-                    owner.evaluate("(c) => window.pchat.session.theirCode(c)", code)
+                    check(other.query_selector('[data-test=copy-answer]') is not None, 'the code back can be copied, to send from afar')
+                    owner.fill('[data-test=answer-text]', code)  # pasted, as one sent from afar would be
+                    owner.click('[data-test=use-answer]')
                 wait(owner, "window.pchat.state.screen === 'paired'", 60, f'{owner.name} and {other.name} are paired')
                 wait(other, "window.pchat.state.screen === 'paired'", 30, f'{other.name} says so too')
                 fo = owner.evaluate("Array.from(document.querySelectorAll('[data-test=fingerprint] [data-glyph]')).map(e => e.dataset.glyph).join('')")
                 ff = other.evaluate("Array.from(document.querySelectorAll('[data-test=fingerprint] [data-glyph]')).map(e => e.dataset.glyph).join('')")
                 check(len(fo) > 0 and fo == ff, 'both show the same four pictures')
+                owner.fill('[data-test=call-them]', other_name)
+                other.fill('[data-test=call-them]', owner.name)
+                owner.click('[data-test=open-chat]')
+                other.click('[data-test=open-chat]')
+                wait(owner, f"document.querySelector('[data-test=chat-name]')?.textContent === '{other_name}'", 20, f'{owner.name} calls them {other_name}')
                 conv = owner.evaluate("window.pchat.state.conv")
                 other_conv = other.evaluate("window.pchat.state.conv")
                 return conv, other_conv
@@ -175,7 +201,7 @@ def run(args, serve, launch):
 
             # ---- 2. three phones: X never uses a relay; H carries for X and Y ----
             X = phone('Xia')
-            Y = phone('Yann')
+            Y = phone('Yann', wrapped=True)
             H = phone('Hale')
             relays_off(X)
             hx, xh = meet(H, X, 'Xia', mail=True)
@@ -196,24 +222,27 @@ def run(args, serve, launch):
             check(H.evaluate('window.pchat.session.carrier.done.passed') > passed, 'H passed the signals on')
             X.evaluate(f"window.pchat.session.send('{xy}', 'found-again-FA1')")
             wait(Y, f"{said(Y, yx)}.then(s => s.includes('found-again-FA1'))", 30, 'and they talk again')
-            # Y away: what X says to it is kept by H.
+            # Y away, and X has no relay: nothing can reach Y, so X cannot send (one side never moves on alone).
+            check(Y.evaluate("new Promise(r => { const o = indexedDB.open('p-chat'); o.onsuccess = () => { "
+                             "const q = o.result.transaction('keys').objectStore('keys').get('device'); q.onsuccess = () => r(!!q.result.sign.wrapped); }; })"),
+                  'Y\'s browser cannot keep its key as it is (an iPhone\'s): kept wrapped')
             Y.goto('about:blank')
             wait(X, f"!{linked(X, Y)}", 60, 'Y is away')
-            X.evaluate(f"window.pchat.session.send('{xy}', 'kept-for-you-K1')")
-            wait(H, "window.pchat.store.held().then(h => h.length === 1)", 30, 'H keeps X\'s message for Y, sealed')
-            wait(X, f"window.pchat.store.messages('{xy}').then(ms => ms.some(m => m.mine && m.status === 'mailbox'))", 20,
-                 'X shows it waiting in a mailbox')
+            X.evaluate(f"window.pchat.ui.screen('chat', {{conv: '{xy}'}})")
+            wait(X, "document.querySelector('[data-test=message]')?.disabled && document.querySelector('[data-test=send]')?.disabled", 20,
+                 'X\'s chat with Y says it cannot send now')
+            refused = X.evaluate(f"window.pchat.session.send('{xy}', 'never-sent-NS1').then(() => false, () => true)")
+            check(refused and not X.evaluate(f"{said(X, xy)}.then(s => s.includes('never-sent-NS1'))"), 'and nothing is sent: not even on X\'s side')
             Y.goto(url + '/index.html')
             wait(Y, "window.pchat && window.pchat.state.screen !== 'loading'", 60, 'Y is back')
-            wait(Y, f"{said(Y, yx)}.then(s => s.includes('kept-for-you-K1'))", 90, 'Y is given what H kept, and opens it')
-            wait(H, "window.pchat.store.held().then(h => h.length === 0)", 30, 'opened, H drops it')
-            check(H.evaluate('window.pchat.session.carrier.done.given') >= 1, 'H gave it')
+            check(Y.evaluate("window.pchat.state.screen") == 'contacts', 'reloaded, Y is still itself - its chats, not "lost its key"')
             if not wait(X, linked(X, Y), 90, 'X and Y are linked again, through H'):
                 for page in (X, Y, H):
                     print('   ', page.name, page.evaluate('''() => { const s = window.pchat.session; return JSON.stringify({
                       live: s.app.livePeers().map(p => p.slice(0, 6)), signals: s.signals.map(x => [x.peer.slice(0, 6), Math.round((Date.now() - x.made) / 1000)]),
                       relinked: [...s.relinked].map(([p, t]) => [p.slice(0, 6), Math.round((Date.now() - t) / 1000)]),
                       reach: [...s.carrier.reach].map(([p, m]) => [p.slice(0, 6), m.size]), done: s.carrier.done }); }'''), flush=True)
+                print('    X rtc', X.evaluate("JSON.stringify(window.__rtc.map(r => [r.n, Math.round((Date.now() - r.t0) / 1000), r.states, r.closed]))")[:6000], flush=True)
             X.evaluate(f"window.pchat.session.send('{xy}', 'live-again-L1')")
             wait(Y, f"{said(Y, yx)}.then(s => s.includes('live-again-L1'))", 30, 'and talk directly again')
             check(X.evaluate('window.__sockets') == [], 'X never opened a connection to a relay')

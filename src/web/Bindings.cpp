@@ -97,6 +97,11 @@ public:
             c.peer = app_->peer();
             for (unsigned i = 0; i < servers["length"].as<unsigned>(); ++i) c.ice_servers.push_back(servers[i].as<std::string>());
             c.relay_only = relay_only;
+            // Room for a burst (signals carried for contacts, a call's roots) taken
+            // between two pumps: a Reliable link whose queue overflows is closed by
+            // design, and with no relay a closed link may not come back.
+            c.receive_messages = 8192;
+            c.receive_bytes = 64u << 20;
             live_ = std::make_unique<WebLive>(c);
             app_->set_live(live_.get());
             return 0;

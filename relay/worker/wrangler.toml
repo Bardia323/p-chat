@@ -1,0 +1,19 @@
+# The p-chat relay on Cloudflare: one Worker, one Durable Object (SQLite).
+#   wrangler deploy              (from this folder)
+# Limits as relay.py's flags, in vars (TTL in seconds); the defaults are relay.py's.
+name = "p-chat-relay"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+workers_dev = true
+
+# Nothing is logged: no observability, no tail.
+[observability]
+enabled = false
+
+[[durable_objects.bindings]]
+name = "RELAY"
+class_name = "Relay"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Relay"]

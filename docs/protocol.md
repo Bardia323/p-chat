@@ -726,8 +726,7 @@ have, channel `carry`, each frame `u8 kind | body`:
 `handle` is the relay's, `H(envelope)` truncated to 16 bytes. A phone with
 no relay for a chat (relays off, or none) gives its signals to every
 linked phone (directly to the one they are for, if linked; to the others
-to pass on), again every 5 s for 2 minutes; and makes a lost link again
-every 30 s while some contact is linked, since only the newest try is taken.
+to pass on), again every 5 s for 2 minutes.
 An envelope for a device that takes mail is given to up to three linked
 phones to keep. A phone asks every linked phone for its mailboxes each 8 s.
 
@@ -859,7 +858,11 @@ A device is in the room of every secret its conversation still keeps (at
 most three). A signal goes to the room its peer was last heard from; to a
 peer not heard from yet, it goes to every kept room under one counter (the
 copies after the first are dropped as replays) - a device that missed a
-rekey while away is still met. When the
+rekey while away is still met. The engine takes a link's sessions only
+forward: a device that heard a peer signal under an older session than its
+own newest for that link, while the link is down (the peer went away and
+began again), makes the link again - at most every 15 s - so the peer takes
+up the newer session. When the
 channel is up, envelopes go direct; otherwise to the mailbox. A message sent
 live and not acknowledged within 30 s is also left in the mailbox. Both
 paths deduplicate by `(sender, sequence)`; the recipient deletes mailbox
@@ -921,7 +924,8 @@ per mailbox and in all, bounds rooms and members, and logs nothing.
 | Stream pieces | 250 ms; 4 stripes; a forwarder gives to 6 at once |
 | Waited on a gap | 400 ms (talk), 3 s (a stream) |
 | In person: candidates gathered / pairing link kept | 4 s / until linked + 10 s, at most 10 min |
-| Carried: signals again / for | every 5 s / 2 min; a lost link made again each 30 s |
+| Carried: signals again / for | every 5 s / 2 min |
+| A link made again for a peer heard behind it | at most every 15 s |
 | Kept for others | 512 envelopes, 16 MiB, 128 a giver, 14 days |
 | Carried a minute, per giver | 120 signals, 60 envelopes, 30 asks |
 

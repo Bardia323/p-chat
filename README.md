@@ -1,9 +1,8 @@
 # p-chat
 
-Live: **https://p-chat-21r.pages.dev** (Cloudflare Pages; release 1, bundle
-fingerprint `a7a9 948d 195d 889d 77ec 0b1a 3263 921a`). No relay is run for it
-yet: pair in person (each phone scans the other's code), or set your own
-relay in Settings → Advanced.
+Live: **https://p-chat-21r.pages.dev** (Cloudflare Pages), with its relay at
+`wss://p-chat-relay.bardia-shahrestani.workers.dev` (Cloudflare Workers,
+`relay/worker`). Any other relay can be set in Settings → Advanced, or none.
 
 Private phone-to-phone messages in a plain browser tab: no install, no
 account. You show a friend a QR code and tell them six words; their browser
@@ -85,6 +84,15 @@ or reordered message shows.
   given the history, each message goes with its own key; whoever later
   takes that phone (or the one that gave it) can read what was given.
   Disappearing messages are not given (their keys are gone).
+- *Keys on a browser that cannot keep them*: where a browser does not keep
+  an Ed25519/X25519 CryptoKey in IndexedDB (an iPhone seen losing one on a
+  reload), the private key is kept wrapped (AES-GCM) under a non-extractable
+  key, and unwrapped non-extractable. Its bytes still never reach the page,
+  but a script running in the page could unwrap it extractable - which it
+  cannot do where the key is kept as it is.
+- *The relay on Cloudflare*: it holds only sealed boxes and logs nothing,
+  but Cloudflare carries its connections, so it sees the addresses they come
+  from, as any host does. Run your own relay to change who that is.
 - *Deniability*: messages are signed by the device key (so equivocation can
   be proven and history agreed). A recipient can show others a signed message.
 
@@ -162,6 +170,7 @@ Python; `SGCHAT_ECHO` where the browser test finds the echo bot.
 | `sgchat_ratchet` | the Double Ratchet: both ways, out of order, limits, replays |
 | `sgchat_app` | the whole messenger natively: pairing, wrong code, both ways, reload, epochs, extra device, revoke, a dropped message, live |
 | `sgchat_relay` | the relay: token burn, reusable cancel, TTL, quotas, room isolation, malformed frames, backpressure, Web Push, push forwarding |
+| `sgchat_relay_worker` | the same checks against the Cloudflare Worker relay under `wrangler dev` (no backpressure or relay-held VAPID there) |
 | `sgchat_media` | files: chunks, references, relay pieces, size limits; live pieces |
 | `sgchat_call` | calls and streams over simulated links: a swarm of nine with churn, Placement's plan in the world, an injected chunk refused, latency logged; talk under 300 ms |
 | `sgchat_live` | live state: table tennis in two worlds with late packets, the same game step for step; a whiteboard's views brought to the one that leads |
@@ -347,7 +356,7 @@ web/              index.html ui.js session.js store.js crypto.js media.js push.j
                   direct.js (pairing in person) carry.js (contacts carrying) sw.js style.css
                   fonts/ emoji/ stickers/ vendor/ app.webmanifest icons
 bot/              native devices: WebSocket client, relay frames, a host that keeps its keys; the echo bot
-relay/relay.py    the relay
+relay/relay.py    the relay; relay/worker/ the same on Cloudflare (Worker + Durable Object)
 tools/            make_vectors.cpp, release.py, icons.py
 tests/            native checks, vectors, relay, Node, browser, end to end
 docs/protocol.md  the protocol, byte for byte

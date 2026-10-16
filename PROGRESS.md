@@ -636,3 +636,42 @@ native App test (a carried frame, its bound, the linked peers). A pairing
 link between Chrome and Firefox opened both ways from the codes alone
 (Playwright's Firefox); WebKit would not start on this server (system
 libraries missing), so Safari is untried until a real iPhone.
+
+## v1.2 A relay always there; nothing sent that cannot arrive
+
+From trying the public site on phones: a call that never rang and texts
+that stopped (the site had no relay, so a link lost to a locked screen or a
+reload could never be made again); an iPhone that lost its device on a
+reload; names chosen for oneself.
+
+- `relay/worker`: the relay on Cloudflare (Worker + one SQLite Durable
+  Object, WebSockets that hibernate; BLAKE2b of its own, checked against
+  Python's on 36 inputs). `tests/test_relay.py --worker` runs the relay's
+  checks against it under `wrangler dev` (`sgchat_relay_worker`); a break
+  put in on purpose was caught (5 checks). Deployed; the public release's
+  default relay. A chat made with no relay uses the default one.
+- Keys: where a browser does not give back an Ed25519/X25519 CryptoKey from
+  IndexedDB (tried once with a key of no use), private keys are kept wrapped
+  (AES-GCM, pkcs8) under a non-extractable key and unwrapped non-extractable.
+  `sgchat_meet` makes one phone such a browser and reloads it. A phone whose
+  key is gone says so, names no one, and can start again (the database
+  closed, then deleted).
+- Nothing sent that cannot arrive: no relay and no live link to every other
+  device - the composer is shut and `send` refuses. Calls only with a relay.
+- No name of one's own: invites and pairing ask none; the Paired screen
+  asks what to call them (both sides); a contact with none is "New contact".
+- Links: a phone heard signalling under an older session than this one's
+  newest for it, while the link is down, has the link made again (at most
+  each 15 s), instead of every 30 s on a timer - which restarted links that
+  were half up. A link is restarted for a missing acknowledgement only
+  where it can be made again (the chat's relay up, or another linked
+  contact): found by recording every RTCPeerConnection in the test - a
+  healthy link, the only one a phone had, closed by that rule 32 s after it
+  was made. Receive queues 8192 messages / 64 MiB, the App taking up to 4096
+  a pump.
+- A notice is centred by its margins (its animation's transform had undone
+  the centring and pushed it off the screen). The code back can be copied
+  and pasted, for pairing with no relay from afar.
+
+Runs: native 13 of 13, the Wasm suite 7 of 7; `sgchat_meet` 9 in a row
+after the last change (it had failed every run before it).

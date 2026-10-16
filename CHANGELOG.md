@@ -1,5 +1,26 @@
 # Changelog
 
+## v1.2 (2026-10-16): a relay that is always there, and nothing sent that cannot arrive
+
+- The public p-chat has a relay by default, on Cloudflare (`relay/worker`):
+  the same frames as `relay/relay.py`, checked by the same tests. A chat
+  made with no relay uses it, so its two phones can always find each other
+  again after a reload, a locked screen or a lost link.
+- Nothing is sent that cannot arrive: in a chat with no relay, sending
+  waits until the two phones are linked (the box says so). Calls only where
+  a relay can bring a dropped call back.
+- A reload on an iPhone no longer loses the device: where a browser cannot
+  keep an Ed25519/X25519 key in its storage, the key is kept wrapped under
+  one it can keep. A phone that has lost its key says so plainly, names no
+  one, and can start again.
+- Nobody chooses a name for themselves: after pairing, each phone names the
+  other, and that name never leaves it.
+- A notice no longer runs off the side of the screen.
+- With no relay, the joining phone's code can be copied and sent, and the
+  inviting phone can paste it.
+- A link lost while its peer was away is made again when the peer is next
+  heard from (under an older session): the link it could not take back.
+
 ## v1.1 (2026-10-16): no middleman (protocol 10)
 
 - A new contact needs one side only: they scan your code, or open your

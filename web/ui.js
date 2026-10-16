@@ -6,7 +6,7 @@
 import { needsHomeScreen } from './push.js';
 import { Session } from './session.js';
 import * as store from './store.js';
-import { hex } from './crypto.js';
+import { hex, forgetAll } from './crypto.js';
 import { qrcode } from './vendor/qrcode.mjs';
 import { KIND as FILE, recorder } from './media.js';
 import { Calls } from './call.js';
@@ -281,25 +281,25 @@ function unsupported() {
     h('div', { class: 'pad' }, h('p', {}, 'This browser cannot keep keys that cannot be copied out of it (Ed25519 and X25519 in WebCrypto). p-chat uses no other kind of key, so it stops here.'))));
 }
 
-function unrecognized(data = state) {
-  const who = data.owner || 'the person who invited you';
-  draw(head('Not known', { small: true }), h('main', {},
-    h('div', { class: 'band red' }, h('p', { class: 'caps', 'data-test': 'unrecognized' }, 'Device not recognized. Ask ' + who + ' for a new key.')),
-    h('div', { class: 'pad' }, h('p', {}, 'This browser no longer has the key it was paired with: its storage was cleared (Safari clears a site not opened for about a week). A key cannot be made again. Open a new invite from ' + who + '.'))));
+// This phone's key is gone: it cannot open its chats, and a key cannot be
+// made again. Starting again clears what it can no longer open.
+function unrecognized() {
+  draw(head('Key lost', { small: true }), h('main', {},
+    h('div', { class: 'band red' }, h('p', { class: 'caps', 'data-test': 'unrecognized' }, 'This phone lost its key')),
+    h('div', { class: 'pad' },
+      h('p', {}, 'Its chats are still here, but it can no longer open them. A key cannot be made again.'),
+      h('p', {}, 'Start again, then pair with your contacts once more.'),
+      h('button', { class: 'btn wide', 'data-test': 'start-again', onclick: async () => {
+        if (!confirm('Clear this phone\'s chats and start again?')) return;
+        await forgetAll();
+        location.reload();
+      } }, 'Start again'))));
 }
 
-async function saveName(n) {
-  const p = await store.profile();
-  await store.setProfile({ ...p, name: clip(n) || p.name || 'Me' });
-  session.profile = await store.profile();
-  session.app?.rename(session.profile.name);
-}
 
 function renderPair() {
   const parsed = (() => { try { return session.chat.parseInvite(invite); } catch { return null; } })();
   if (!parsed) return show('error', { kind: 'bad_link' });
-  const name = h('input', { autocomplete: 'nickname', dir: 'auto', placeholder: 'What they will see you as', 'data-test': 'name' });
-  const call = h('input', { autocomplete: 'off', dir: 'auto', placeholder: 'Only you see this name', 'data-test': 'call' });
   const mail = h('input', { type: 'checkbox', 'data-test': 'mail' });
   const words = h('textarea', { autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', placeholder: 'six words', 'data-test': 'code' });
   const recovering = parsed.kind === KIND.recovery;
@@ -315,7 +315,7 @@ function renderPair() {
     state.pairing = 'working';
     renderPair();
     await new Promise((r) => setTimeout(r, 30));
-    try { await session.pair(invite, code, clip(name.value) || 'Friend', clip(call.value), mail.checked); }
+    try { await session.pair(invite, code, '', '', mail.checked); }
     catch (e) { state.pairing = null; toast(e.message); renderPair(); }
   };
   const mine = recovering && state.pairing === 'asked' && session.app ? session.app.fingerprintOf(session.app.peer()) : null;
@@ -324,8 +324,6 @@ function renderPair() {
       h('p', { class: 'caps light' }, 'By device ' + shortId(parsed.owner))),
     h('div', { class: 'pad' },
       h('p', {}, 'Type the six words you were told separately. Nothing you type leaves this phone: the words only prove this link was meant for you.'),
-      h('label', { class: 'field' }, h('span', {}, 'Your name'), name),
-      h('label', { class: 'field' }, h('span', {}, 'What do you call them?'), call),
       h('label', { class: 'field' }, h('span', {}, 'The six words'), words),
       h('label', { class: 'check' }, mail, h('span', {}, 'When this phone is away, let messages wait on the relay, locked so only this phone can read them (up to 14 days). Otherwise they wait on the sender\'s phone until you are both online.')),
       go, status,
@@ -351,7 +349,7 @@ async function renderContacts() {
   if (state.screen !== 'contacts') return;
   const contacts = ids.some((id) => session.info(id).kind === 0 && !session.info(id).removed);
   draw(head('Chats'), h('main', {}, releaseBanners(),
-    h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, p.name ? 'This phone: ' + p.name : 'This phone'),
+    h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'This phone'),
       h('p', { class: 'caps light' }, ids.length ? ids.length + (ids.length === 1 ? ' conversation' : ' conversations') : 'Private messages, phone to phone')),
     h('div', { class: 'lines' }),
     ids.length ? h('ul', { class: 'shelf' }, rows) : h('div', { class: 'empty', 'data-test': 'no-chats' },
@@ -424,14 +422,18 @@ async function renderChat(first) {
       h('button', { class: 'btn light', 'data-test': 'decline', onclick: () => { state.ringing.delete(id); session.calls.decline(ringing.call); renderChat(false); } }, 'Decline'))));
   if (missing.length) banners.push(h('div', { class: 'banner', 'data-test': 'missing' }, h('b', {}, 'Message missing'),
     missing.length + (missing.length === 1 ? ' message was' : ' messages were') + ' sent but never arrived. ' + (missing.length === 1 ? 'It' : 'They') + ' may have been lost on the way.'));
-  const input = h('textarea', { rows: 1, placeholder: info.removed ? 'Removed' : 'Message', disabled: info.removed, 'data-test': 'message', dir: 'auto', maxlength: 20000, 'aria-label': 'Message' });
-  const key = h('button', { class: 'key', 'data-test': 'send', 'aria-label': 'Send', title: 'Send', disabled: info.removed });
+  // No relay and no link to them: nothing can reach them, so nothing is sent
+  // (one side moving on alone is what a chat must never do).
+  const cut = !info.removed && !session.canSend(id);
+  const input = h('textarea', { rows: 1, placeholder: info.removed ? 'Removed' : cut ? 'Not linked to them, and no relay: can\'t send now' : 'Message',
+    disabled: info.removed || cut, 'data-test': 'message', dir: 'auto', maxlength: 20000, 'aria-label': 'Message' });
+  const key = h('button', { class: 'key', 'data-test': 'send', 'aria-label': 'Send', title: 'Send', disabled: info.removed || cut });
   key.append(svg('<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 2.5v15L17.5 10z" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>'));
   const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight + 4, 140) + 'px'; };
   input.addEventListener('input', grow);
   const send = async () => {
     const t = input.value.trim();
-    if (!t) return;
+    if (!t || !session.canSend(id)) return;
     input.value = '';
     grow();
     key.classList.remove('fire');
@@ -483,7 +485,7 @@ async function renderChat(first) {
     info.kind !== 2 ? liveKey(id, 'board') : null,
     info.kind === 0 ? liveKey(id, 'play') : null,
     mic, photos, files);
-  const attach = h('button', { class: 'key attach', 'data-test': 'attach', 'aria-label': 'Attach', title: 'Attach', disabled: info.removed,
+  const attach = h('button', { class: 'key attach', 'data-test': 'attach', 'aria-label': 'Attach', title: 'Attach', disabled: info.removed || cut,
     onclick: () => { tray.classList.toggle('hidden'); attach.classList.toggle('open'); } });
   attach.append(svg('<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3v14M3 10h14" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/></svg>'));
   input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
@@ -548,18 +550,10 @@ async function renderInvite() {
   if (state.invite?.link) return renderInviteShown();
   const contacts = session.conversations().filter((id) => session.info(id).side === 0);
   const pick = h('select', { 'data-test': 'for' }, contacts.map((id) => h('option', { value: id }, session.info(id).name)));
-  const p = await store.profile();
   if (state.screen !== 'invite') return;
-  const name = h('input', { value: p.name || '', autocomplete: 'nickname', dir: 'auto', maxlength: 64, placeholder: 'What they will see you as', 'data-test': 'name' });
-  const named = async () => {
-    if (!clip(name.value)) { toast('Write your name first: it is what they will see.'); name.focus(); return false; }
-    await saveName(name.value);
-    return true;
-  };
   const meet = async () => {
-    if (!(await named())) return;
     try {
-      const made = await session.inPerson(session.profile.name);
+      const made = await session.inPerson();
       state.invite = { inPerson: true, link: made.link, token: made.token, kind: KIND.contact, relayed: made.relayed };
       renderInviteShown();
     } catch (e) { toast(e.message); }
@@ -567,17 +561,14 @@ async function renderInvite() {
   const linked = session.relayOn();
   const make = async (kind) => {
     try {
-      if (!clip(name.value)) { toast('Write your name first: it is what they will see.'); name.focus(); return; }
-      await saveName(name.value);
       const conv = kind === KIND.contact ? '' : pick.value;
       if (kind !== KIND.contact && !conv) { toast('Pick whose device it is.'); return; }
-      const made = await session.invite(kind, conv, session.profile.name);
+      const made = await session.invite(kind, conv);
       state.invite = { ...made, kind, conv };
       renderInviteShown();
     } catch (e) { toast(e.message); }
   };
   draw(head('Invite', { back: () => show('contacts') }), h('main', {},
-    h('div', { class: 'pad' }, h('label', { class: 'field' }, h('span', {}, 'Your name'), name)),
     h('button', { class: 'choice yellow', 'data-test': 'kind-code', onclick: meet },
       h('p', { class: 'caps' }, 'A new contact'), h('p', { class: 'caps light' }, 'They scan your code, or open your link')),
     h('button', { class: 'choice amber', 'data-test': 'kind-contact', onclick: () => make(KIND.contact), disabled: !linked },
@@ -656,13 +647,15 @@ function renderInPerson(inv) {
   const img = h('img', { class: 'qr', alt: 'Your p-chat code', src: qr.createDataURL(8, 0), 'data-test': 'qr', 'data-link': inv.link });
   const relayed = !!inv.relayed;
   const status = h('p', { class: 'fine', 'data-test': 'invite-status' }, inv.joining ? 'Joining the two phones…' : 'Waiting for them…');
-  const scan = () => scanQR('Scan the code on their phone', async (text) => {
+  const take = async (text) => {
     try {
       await session.theirCode(text);
       inv.joining = true;
       status.textContent = 'Joining the two phones…';
     } catch (e) { toast(e.message); }
-  });
+  };
+  const scan = () => scanQR('Scan the code on their phone', take);
+  const pasted = h('input', { autocomplete: 'off', spellcheck: 'false', autocapitalize: 'none', placeholder: 'p-chat:a1.…', 'data-test': 'answer-text' });
   draw(head('Invite', { small: true, back: () => { session.endPairing(); state.invite = null; show('contacts'); } }), h('main', {},
     h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Let them scan this'), h('p', { class: 'caps light' }, 'Or send them the link')),
     h('div', { class: 'pad' }, img,
@@ -673,7 +666,9 @@ function renderInPerson(inv) {
       status,
       h('p', { class: 'fine' }, relayed ? 'Their phone answers through the relay. If it shows a code instead, scan it:'
         : 'No relay: when their phone shows a code, scan it.'),
-      h('button', { class: relayed ? 'btn light' : 'btn wide', 'data-test': 'scan-answer', onclick: scan }, 'Scan their code'))));
+      h('button', { class: relayed ? 'btn light' : 'btn wide', 'data-test': 'scan-answer', onclick: scan }, 'Scan their code'),
+      h('label', { class: 'field' }, h('span', {}, 'Or paste their code'), pasted),
+      h('button', { class: 'btn light', 'data-test': 'use-answer', onclick: () => take(pasted.value) }, 'Use this code'))));
 }
 
 // The phone shown a code in person: its names, then a code of its own back.
@@ -696,25 +691,25 @@ function renderMeet() {
     draw(head('In person', { small: true }), h('main', {},
       h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Show them this code'), h('p', { class: 'caps light' }, 'Their phone scans it')),
       h('div', { class: 'pad' }, h('img', { class: 'qr', alt: 'Your answer as a code', src: qr.createDataURL(8, 0), 'data-test': 'answer-qr', 'data-code': state.meetCode }),
+        h('div', { class: 'row' }, h('button', { class: 'btn light', 'data-test': 'copy-answer', onclick: async () => {
+          await navigator.clipboard?.writeText(state.meetCode).catch(() => {});
+          toast('Copied. Send it to them: they paste it where they would scan it.');
+        } }, 'Copy code')),
         h('p', { class: 'fine', 'data-test': 'pair-status' }, status))));
     return;
   }
-  const name = h('input', { autocomplete: 'nickname', dir: 'auto', placeholder: 'What they will see you as', 'data-test': 'name' });
-  const call = h('input', { autocomplete: 'off', dir: 'auto', placeholder: 'Only you see this name', 'data-test': 'call' });
   const mail = h('input', { type: 'checkbox', 'data-test': 'mail' });
-  store.profile().then((p) => { if (!name.value) name.value = p.name || ''; });
   const relayed = !!d.parsed.relay && session.relayOn();
   const go = h('button', { class: 'btn wide', 'data-test': 'show-answer', onclick: async () => {
-    if (!clip(name.value)) { toast('Write your name first: it is what they will see.'); name.focus(); return; }
     go.disabled = true;
     try {
       if (relayed) {
         // The code names a relay: the request goes back through it, and that is all.
         state.meetAsked = true;
-        await session.pair(d.fragment, d.code, clip(name.value), clip(call.value), mail.checked);
+        await session.pair(d.fragment, d.code, '', '', mail.checked);
         renderMeet();
       } else {
-        state.meetCode = await session.answerInPerson(d, clip(name.value), clip(call.value), mail.checked);
+        state.meetCode = await session.answerInPerson(d, '', '', mail.checked);
         renderMeet();
       }
     } catch (e) { go.disabled = false; state.meetAsked = false; toast(e.message); }
@@ -722,8 +717,6 @@ function renderMeet() {
   draw(head('In person', { small: true, back: () => show('contacts') }), h('main', {},
     h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'You were invited'), h('p', { class: 'caps light' }, 'By device ' + shortId(d.parsed.owner))),
     h('div', { class: 'pad' },
-      h('label', { class: 'field' }, h('span', {}, 'Your name'), name),
-      h('label', { class: 'field' }, h('span', {}, 'What do you call them?'), call),
       h('label', { class: 'check' }, mail, h('span', {}, 'When this phone is away, let messages wait for it, locked so only it can read them: at a relay, or with contacts who carry for others.')),
       go)));
 }
@@ -779,12 +772,24 @@ function renderPaired() {
   const info = session.info(conv);
   const other = peer || info.members.find((m) => !m.self)?.peer;
   const fp = session.app.fingerprintWith(other);
+  // What you call them is yours: chosen here, on this phone, and never sent.
+  const naming = info.kind !== 1;
+  const call = h('input', { value: info.name === 'New contact' ? '' : info.name, autocomplete: 'off', dir: 'auto', maxlength: 64,
+    placeholder: 'Only you see this name', 'data-test': 'call-them' });
+  const go = async () => {
+    const n = clip(call.value);
+    if (naming && n && n !== info.name) await session.rename(conv, n);
+    state.invite = null;
+    show('chat', { conv });
+  };
+  call.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
   draw(head('Paired', { small: true }), h('main', {},
-    h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'With ' + info.name)),
+    h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Paired')),
     h('div', { class: 'pad' },
+      naming ? h('label', { class: 'field' }, h('span', {}, 'What do you call them?'), call) : null,
       h('div', { class: 'emoji', 'data-test': 'fingerprint' }, fp.map((e) => h('div', { 'data-glyph': e.glyph }, emojiPic(e), h('span', { class: 'n' }, e.name)))),
-      h('p', {}, 'Both phones show these four pictures. If you want to be sure no one stood between you, compare them by voice.'),
-      h('button', { class: 'btn wide', 'data-test': 'open-chat', onclick: () => { state.invite = null; show('chat', { conv }); } }, 'Start talking'))));
+      h('p', {}, 'Both phones show these four pictures. To be sure no one stood between you, compare them by voice.'),
+      h('button', { class: 'btn wide', 'data-test': 'open-chat', onclick: go }, 'Start talking'))));
 }
 
 function addToGroup(id) {
@@ -893,8 +898,10 @@ function signalPicker(id) {
 function callKey(id, live = false) {
   const key = h('button', { class: 'label call-key', 'data-test': live ? 'go-live' : 'call', 'aria-label': live ? 'Go live' : 'Call',
     title: live ? 'Go live' : 'Call', onclick: async () => {
+      if (!session.canCall(id)) { toast('Calls need a relay, so a dropped call can always find its way back. Turn relays on in Settings.'); return; }
       try { await session.calls.start(id, live); show('call', { conv: id }); } catch (e) { toast(e.message); }
     } });
+  if (!session.canCall(id)) key.classList.add('off');
   key.append(svg(live
     ? '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="2.6" fill="currentColor"/><path d="M5.8 5.8a6 6 0 0 0 0 8.4M14.2 5.8a6 6 0 0 1 0 8.4M3.2 3.2a9.6 9.6 0 0 0 0 13.6M16.8 3.2a9.6 9.6 0 0 1 0 13.6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>'
     : '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.5 2.5l3 3.2-1.6 2a10 10 0 0 0 5.4 5.4l2-1.6 3.2 3-1.6 2.6c-.4.6-1.1.9-1.8.7A15.5 15.5 0 0 1 2.2 6.9c-.2-.7.1-1.4.7-1.8z" fill="currentColor"/></svg>'));
@@ -1051,7 +1058,7 @@ function renderError(data = state) {
   const texts = {
     invite_failed: ['Stopped', 'Invite failed: possible interception', 'The six words did not match the link. Someone else may have tried to use it. The invite is cancelled; make a new one and say the words again.'],
     invite_used: ['Used', 'This invite was already used', 'An invite works for one phone, once. Ask for a new one.'],
-    unrecognized: ['Not known', 'Device not recognized. Ask for a new key.', 'This invite was already used - perhaps by this phone, before its storage was cleared. Keys cannot be made again: ask the person who invited you for a new invite.'],
+    unrecognized: ['Already used', 'This invite was already used.', 'Perhaps by this phone, before it lost its key. Ask for a new invite.'],
     pair_refused: ['Stopped', 'Pairing was refused', data.detail || ''],
     bad_link: ['Broken', 'This link is not an invite', 'It may have been cut short. Ask for it again.'],
   };
@@ -1110,7 +1117,7 @@ function drawAbout(seen) {
         'A relay is optional. It only passes on locked messages, and cannot open them.',
         'Any relay works, even your own. Or turn relays off.'),
       part('1f511', 'Good to know', 'Your chats live only on this phone.', kept, 'Lost your phone? Your contacts can approve a new one.',
-        'Without a relay, messages wait until you are both online.', 'A hacked phone is not protected.'),
+        'Without a relay, you can send only while your phones are linked.', 'A hacked phone is not protected.'),
       h('div', { class: 'row' },
         h('button', { class: 'btn', 'data-test': 'settings', onclick: () => show('settings') }, 'Settings')),
       h('details', { class: 'more', open }, h('summary', {}, 'Check this version'),
@@ -1129,7 +1136,6 @@ function drawAbout(seen) {
 async function renderSettings() {
   const p = await store.profile();
   if (state.screen !== 'settings') return;
-  const name = h('input', { value: p.name || '', maxlength: 64 });
   const relay = h('input', { value: p.relay || '', placeholder: session.config.relay || 'wss://relay.example', 'data-test': 'server', autocomplete: 'off', spellcheck: 'false', autocapitalize: 'none' });
   const said = h('p', { class: 'fine', 'data-test': 'server-state' });
   const now = theme();
@@ -1152,8 +1158,6 @@ async function renderSettings() {
         ? 'On. While linked, this phone passes locked signals between your contacts and keeps locked messages for them while they are away. It cannot read them - but it does see which of your contacts talk to each other.'
         : 'Off. This phone carries nothing for others. It still takes what is for it.'),
       notifications(p),
-      h('label', { class: 'field' }, h('span', {}, 'Your name'), name),
-      h('button', { class: 'btn', 'data-test': 'save-settings', onclick: async () => { await saveName(name.value); toast('Saved'); } }, 'Save'),
       h('details', { class: 'more', 'data-test': 'advanced' }, h('summary', {}, 'Advanced'),
         h('label', { class: 'field' }, h('span', {}, 'Relay for invites you make'), relay),
         h('p', { class: 'fine' }, 'Any relay works: your own, a friend\'s, or the one p-chat came with (leave it empty). Chats you already have keep theirs.'),

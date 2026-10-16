@@ -27,6 +27,7 @@
 #include <deque>
 #include <functional>
 #include <memory>
+#include <array>
 #include <set>
 
 namespace chat {
@@ -433,6 +434,10 @@ private:
         std::uint64_t at = 0;
     };
     std::deque<EarlySignal> early_signals_;
+    // The newest session this device has signalled each peer, per lane; and
+    // when a link was last made again because the peer was found behind it.
+    std::map<std::string, std::array<std::uint64_t, 2>> said_session_;
+    std::map<std::string, std::uint64_t> behind_at_;
     bool signal_into(const Key32& room, const Bytes& box);
     void call_map(const std::string& peer, const Bytes& bytes);
     void call_want(const std::string& peer, const Bytes& bytes);

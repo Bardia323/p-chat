@@ -156,9 +156,9 @@ export class Session {
     });
     try { this.config = await (await fetch('config.json')).json(); } catch { /* none: no STUN/TURN */ }
     this.persisted = await c.persist();
-    this.dev = await c.device(false);
-    // Records this device can no longer read (its keys, the at-rest key with
-    // them, were cleared) mean a device that was paired and is no more.
+    // Chats this device can no longer open - its key gone, or not given back
+    // by the browser - mean a device that was paired and is no more.
+    try { this.dev = await c.device(false); } catch { this.dev = null; }
     let records = [];
     try {
       this.profile = await store.profile();
@@ -166,7 +166,7 @@ export class Session {
     } catch {
       return this.ui.screen('unrecognized', {});
     }
-    if (!this.dev && records.length) return this.ui.screen('unrecognized', { owner: records[0].meta?.name });
+    if (!this.dev && records.length) return this.ui.screen('unrecognized', {});
     if (this.dev) await this.startApp(records);
     // Each round on its own clock; what one of them throws is said, with its
     // name, and the next round tries again.
@@ -177,7 +177,7 @@ export class Session {
     every('pairing', PAIR_POLL_MS, () => this.pollPairing());
     every('signals', 1500, () => this.signals.length && this.sendSignals());
     every('media', 1200, () => this.media.tick());
-    every('carry', 1000, async () => { if (this.app) { await this.carrier.tick(); this.checkPairing(); this.relinkThroughContacts(); } });
+    every('carry', 1000, async () => { if (this.app) { await this.carrier.tick(); this.checkPairing(); this.watchReach(); } });
     every('sweep', SWEEP_MS, () => this.sweep());
     // What the service worker says of releases: one waiting, one refused, a fork.
     navigator.serviceWorker?.addEventListener('message', (e) => this.workerSaid(e.data));
@@ -188,7 +188,8 @@ export class Session {
     return true;
   }
   async startApp(records) {
-    this.app = new this.chat.App(c.hex(this.dev.signPub), c.hex(this.dev.agreePub), this.profile.name || 'Me');
+    // A device introduces itself by no name: each side names the other, on its own phone.
+    this.app = new this.chat.App(c.hex(this.dev.signPub), c.hex(this.dev.agreePub), '');
     for (const r of records) {
       try {
         this.app.load(r.bytes);
@@ -202,16 +203,15 @@ export class Session {
         try { this.app.replay(id, m.obs, m.mine ? m.body : new Uint8Array(0), m.time); } catch { /* a message of a past committee */ }
     this.app.live(this.config.ice || [], false);
     this.app.start();
-    for (const [id, meta] of this.conv) if (meta.relay) this.relay(meta.relay);
+    for (const id of this.conv.keys()) this.relayOf(id);
     await this.pump();
     this.fetchAll();
   }
   // The device key is made once, however many ask for it at the same moment.
-  ensureDevice(name) {
+  ensureDevice() {
     if (this.app) return Promise.resolve();
     if (!this.making) this.making = (async () => {
       this.dev = await c.device(true);
-      this.profile = { ...this.profile, name: name || this.profile.name || 'Me' };
       await store.setProfile(this.profile);
       await this.startApp([]);
     })().finally(() => { this.making = null; });
@@ -229,7 +229,7 @@ export class Session {
       this.relays.clear();
       this.joined.clear();
     } else {
-      for (const meta of this.conv.values()) if (meta.relay) this.relay(meta.relay);
+      for (const id of this.conv.keys()) this.relayOf(id);
     }
   }
   async setHelping(on) {
@@ -240,7 +240,7 @@ export class Session {
     if (!url || !this.relayOn()) return null;
     if (!this.relays.has(url)) {
       const r = new Relay(url, (room, box) => { this.app?.signalIn(room, box); this.pump(); }, () => {
-        for (const k of [...this.joined]) if (this.conv.get(k.split(':')[0])?.relay === url) this.joined.delete(k);
+        for (const k of [...this.joined]) if (this.relayUrlOf(k.split(':')[0]) === url) this.joined.delete(k);
         this.joinRooms(url);
         this.fetchAll();
         this.flushOutbox();
@@ -249,41 +249,54 @@ export class Session {
     }
     return this.relays.get(url);
   }
+  // A chat's relay: the one it was made with, or - made with none (paired in
+  // person while no relay was used) - this p-chat's own, so its two phones
+  // can always find each other again. Both use the same; its rooms and
+  // mailboxes come from the chat's secret, whichever relay carries them.
+  relayUrlOf(conv) {
+    return this.conv.get(conv)?.relay || (this.relayOn() ? this.profile?.relay || this.config.relay || '' : '');
+  }
   relayOf(conv) {
-    const url = this.conv.get(conv)?.relay;
+    const url = this.relayUrlOf(conv);
     return url ? this.relay(url) : null;
+  }
+  // A call only where a relay can always bring a dropped link back: one that
+  // could not would leave the chat with no way to reach the other phone.
+  canCall(conv) { return !!this.relayOf(conv); }
+  // A link is made again only where it can be made: through the chat's relay,
+  // up now, or a contact linked here to carry the signals. Otherwise a link
+  // that seems quiet is left as it is - restarted, it could never come back.
+  canRelink(conv, peer) {
+    if (conv && this.relayOf(conv)?.up) return true;
+    return this.app.livePeers().some((p) => p !== peer);
+  }
+  // Whether what is said now reaches them: through a relay (it keeps what
+  // waits), or over a live link to every other device of the chat. Neither:
+  // nothing is sent. Said again to the screen whenever it changes.
+  canSend(conv) {
+    if (this.relayOf(conv)) return true;
+    const info = this.app.info(conv);
+    const others = info.members.filter((m) => !m.self);
+    return others.length > 0 && others.every((m) => this.app.liveWith(m.peer));
+  }
+  watchReach() {
+    this.reach ??= new Map();
+    for (const id of this.app.conversations()) {
+      const now = this.canSend(id);
+      if (this.reach.has(id) && this.reach.get(id) !== now) this.ui.changed(id);
+      this.reach.set(id, now);
+    }
   }
   async joinRooms(url) {
     if (!this.relay(url)) return;
     for (const [id, meta] of this.conv) {
-      if (meta.relay !== url || this.app.info(id).removed) continue;
+      if (this.relayUrlOf(id) !== url || this.app.info(id).removed) continue;
       // Every room of a secret still kept: a device that missed a rekey is in one before.
       for (const { room, label } of this.app.roomsOf(id)) {
         try {
           const r = await this.relay(url).join(room, label);
           if (r.status === STATUS.ok) this.joined.add(id + ':' + c.hex(room));
         } catch { /* rejoined on the next open */ }
-      }
-    }
-  }
-  // A device this one has no link with, in a chat no relay serves now: its
-  // link is made again every half minute while a contact is linked to carry
-  // the signals. The newest try is the one the other end takes (the engine's
-  // sessions only go forward), so it must be said again once the other end
-  // can hear it - a relay keeps a signal until then; a contact cannot know.
-  relinkThroughContacts() {
-    const now = Date.now();
-    if (!this.app.livePeers().length) return;
-    for (const id of this.app.conversations()) {
-      const info = this.app.info(id);
-      if (info.removed || info.kind === 2 || this.relayOf(id)?.up) continue;
-      for (const m of info.members) {
-        if (m.self || this.app.liveWith(m.peer)) { this.lost?.delete(m.peer); continue; }
-        this.lost ??= new Map();
-        if (!this.lost.has(m.peer)) this.lost.set(m.peer, now);
-        if (now - this.lost.get(m.peer) < 20e3 || now - (this.relinked.get(m.peer) || 0) < 30e3) continue;
-        this.relinked.set(m.peer, now);
-        this.app.reconnectLive(m.peer);
       }
     }
   }
@@ -446,7 +459,7 @@ export class Session {
       case 'recovery_approve': case 'recovery_of_me': this.ui.alert(conv, n.kind); break;
       case 'recovery_refused': this.ui.warn('The old device refused: it is not lost. Nothing changed.'); this.ui.changed(conv); break;
       case 'device_replaced': {
-        const url = this.conv.get(conv)?.relay;
+        const url = this.relayUrlOf(conv);
         if (url) this.joinRooms(url);
         this.ui.changed(conv);
         break;
@@ -485,7 +498,7 @@ export class Session {
         this.ui.changed(null);
         break;
       case 'rekeyed': case 'device_added': case 'revoked': {
-        const url = this.conv.get(conv)?.relay;
+        const url = this.relayUrlOf(conv);
         if (url) this.joinRooms(url);
         this.ui.changed(conv);
         break;
@@ -650,7 +663,7 @@ export class Session {
         await this.status({ conversation: o.conv, sequence: o.seq }, 'mailbox');
       }
       if (o.waiting && (!o.mailbox || !this.relayOf(o.conv)) && o.peer && now - (o.made || now) > 10000 && !this.app.liveWith(o.peer) &&
-          now - (this.relinked.get(o.peer) || 0) > 15000) {
+          now - (this.relinked.get(o.peer) || 0) > 15000 && this.canRelink(o.conv, o.peer)) {
         this.relinked.set(o.peer, now);
         this.app.reconnectLive(o.peer);
       }
@@ -677,7 +690,7 @@ export class Session {
       if (o.live && !o.relayed && now - o.live > ACK_WAIT_MS) {
         // Sent live and not acknowledged: the link may say it is up and
         // deliver nothing. It is made again (at most twice a minute).
-        if (now - (this.relinked.get(o.peer) || 0) > ACK_WAIT_MS) {
+        if (now - (this.relinked.get(o.peer) || 0) > ACK_WAIT_MS && this.canRelink(o.conv, o.peer)) {
           this.relinked.set(o.peer, now);
           this.app.reconnectLive(o.peer);
         }
@@ -723,7 +736,7 @@ export class Session {
     this.fetching = true;
     try {
       for (const [id, meta] of this.conv) {
-        const relay = meta.relay && this.relay(meta.relay);
+        const relay = this.relayOf(id);
         if (!relay?.up) continue;
         for (const item of await relay.fetch(this.app.mailboxesOf(id))) {
           if (item.envelope[0] === 18) {
@@ -979,9 +992,10 @@ export class Session {
   async setSignal(conv, symbol) { await store.setSignal(conv, symbol); }
 
   // ---- the UI fires and sends ----
-  async send(conv, text) { this.app.post(conv, text, Date.now()); await this.pump(); }
-  async sendFile(conv, file, kind) { await this.media.send(conv, await this.media.prepare(file, kind)); }
-  async sendPrepared(conv, prepared) { await this.media.send(conv, prepared); }
+  reachable(conv) { if (!this.canSend(conv)) throw new Error('Not linked to them, and no relay: nothing can be sent now.'); }
+  async send(conv, text) { this.reachable(conv); this.app.post(conv, text, Date.now()); await this.pump(); }
+  async sendFile(conv, file, kind) { this.reachable(conv); await this.media.send(conv, await this.media.prepare(file, kind)); }
+  async sendPrepared(conv, prepared) { this.reachable(conv); await this.media.send(conv, prepared); }
   async read(conv) { this.app.read(conv); await this.pump(); }
   async rename(conv, name) { this.app.renameContact(conv, name); await this.pump(); }
   async setDelivery(conv, mailbox) { this.app.setDelivery(conv, mailbox ? 2 : 1); await this.pump(); }
@@ -1073,7 +1087,7 @@ export class Session {
 
   // ---- pairing: the owner ----
   async invite(kind, conv, name) {
-    await this.ensureDevice(name);
+    await this.ensureDevice();
     const relay = this.profile.relay || this.config.relay;
     if (!this.relayOn()) throw new Error('An invite sent as a link needs a relay, and relays are off. Pair in person, or turn relays on in Settings.');
     if (!relay) throw new Error('This p-chat has no relay to make invites with. Set one in About → Settings → Advanced.');
@@ -1140,8 +1154,8 @@ export class Session {
     if (!inPerson && (!invite.relay || !this.relayOn()))
       throw new Error(invite.relay ? 'This invite needs a relay, and relays are off. Turn them on in Settings, or pair in person.' : 'This invite is for pairing in person: scan the other phone\'s code.');
     this.askRelay = invite.relay;
-    await this.ensureDevice(name);
-    const a = this.app.ask(fragment, code, name, call || '', !!mail);
+    await this.ensureDevice();
+    const a = this.app.ask(fragment, code, '', call || '', !!mail);
     // The relay the invite names (none, if the inviting phone uses none) is
     // the chat's, as for an invite sent as a link - used while relays are on.
     await store.saveAsking({ asking: a.asking, mailbox: a.mailbox, relay: a.relay, owner: invite.owner, made: Date.now() });
@@ -1183,7 +1197,7 @@ export class Session {
   // the chat works without), and a link offered. Its code is a link the
   // other phone's camera opens.
   async inPerson(name) {
-    await this.ensureDevice(name);
+    await this.ensureDevice();
     this.endPairing();
     const relay = this.relayOn() ? this.profile.relay || this.config.relay || '' : '';
     const inv = this.app.invite(1, relay, '');
@@ -1210,7 +1224,7 @@ export class Session {
   // ... and its answer, to show back. Once the link is up, the pairing
   // request goes over it.
   async answerInPerson(d, name, call, mail) {
-    await this.ensureDevice(name);
+    await this.ensureDevice();
     this.endPairing();
     const link = new PairLink(this.config.ice);
     const answer = await link.answer(d.offer);

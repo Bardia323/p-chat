@@ -243,9 +243,7 @@ def run(args, serve, launch):
             check(A.evaluate("document.querySelector('[data-test=new-group]').disabled && !document.querySelector('[data-test=invite]').disabled"),
                   'Group waits for a contact; Invite does not')
             A.click('[data-test=start-invite]')
-            A.click('[data-test=kind-contact]')
-            check(not A.query_selector('[data-test=qr]'), 'no invite without a name')
-            A.fill('[data-test=name]', 'Bardia Zelkova')
+            check(not A.query_selector('[data-test=name]'), 'an invite asks for no name of one\'s own: they choose what to call you')
             A.click('[data-test=kind-contact]')
             A.wait_for_selector('[data-test=qr]')
             link = A.get_attribute('[data-test=qr]', 'data-link')
@@ -255,8 +253,7 @@ def run(args, serve, launch):
             f_ctx, F = device('friend')
             open_app(F, link)
             check(F.evaluate('location.hash') == '', 'the fragment is taken out of the address bar')
-            F.fill('[data-test=name]', 'Ana Qvistberg')
-            F.fill('[data-test=call]', 'Big Brother Pellow')
+            check(not F.query_selector('[data-test=name]') and not F.query_selector('[data-test=call]'), 'pairing asks for no names')
             F.fill('[data-test=code]', words.upper().replace(' ', '  '))
             F.check('[data-test=mail]')  # Ana lets mail wait for her phone
             F.click('[data-test=pair]')
@@ -268,12 +265,18 @@ def run(args, serve, launch):
             check(A.evaluate("Array.from(document.querySelectorAll('[data-test=fingerprint] img')).every(i => i.complete && i.naturalWidth > 0)"),
                   'the fingerprint pictures load (shipped with the app, not from a font)')
             check(len(fa) == 4 and fa == ff, 'both show the same four emoji: ' + ''.join(fa))
+            # Paired: each names the other, on their own phone; nothing chosen was sent.
+            c1 = A.evaluate('window.pchat.state.conv')
+            check(A.evaluate(f"window.pchat.session.info('{c1}').introduced") == '' and F.evaluate(f"window.pchat.session.info('{c1}').introduced") == '',
+                  'neither side introduced itself by a name')
+            A.fill('[data-test=call-them]', 'Ana Qvistberg')
+            F.fill('[data-test=call-them]', 'Big Brother Pellow')
             A.click('[data-test=open-chat]')
             F.click('[data-test=open-chat]')
             for page in (A, F):
                 page.wait_for_selector('[data-test=chat-name]')
             check(text_in(F, '[data-test=chat-name]') == ['Big Brother Pellow'], 'the friend calls him what she chose')
-            check(text_in(A, '[data-test=chat-name]') == ['Ana Qvistberg'], 'the owner sees what she calls herself')
+            check(text_in(A, '[data-test=chat-name]') == ['Ana Qvistberg'], 'and he calls her what he chose')
 
             # ---- texts both ways, live ----
             wait(A, "window.pchat.session.app.sendLive && (() => { const s = window.pchat.session; const c = s.conversations()[0]; "
@@ -391,7 +394,6 @@ def run(args, serve, launch):
             link2 = A.get_attribute('[data-test=qr]', 'data-link')
             e_ctx, E = device('eve')
             open_app(E, link2)
-            E.fill('[data-test=name]', 'Eve')
             E.fill('[data-test=code]', 'abandon ability able about above absent')
             E.click('[data-test=pair]')
             wait(A, "document.querySelector('[data-test=error]')?.textContent === 'Invite failed: possible interception'", 60,
@@ -408,8 +410,6 @@ def run(args, serve, launch):
             words3 = ' '.join(text_in(A, '[data-test=words] li'))
             g_ctx, G = device('friend2')
             open_app(G, link3)
-            G.fill('[data-test=name]', 'Ana tablet')
-            G.fill('[data-test=call]', 'Bro Tablet Name')
             G.fill('[data-test=code]', words3)
             G.click('[data-test=pair]')
             if not wait(G, "window.pchat.state.screen === 'paired'", 120, 'the further device is paired after the handoff'):
@@ -423,8 +423,8 @@ def run(args, serve, launch):
             wait(A, f"window.pchat.session.info('{conv}').members.length === 3", 30, 'three devices on the owner')
             wait(F, f"window.pchat.session.info('{conv}').members.length === 3", 30, 'three devices on the first friend device')
             check(A.evaluate(f"window.pchat.session.info('{conv}').generation") == 1, 'a new committee generation')
+            G.fill('[data-test=call-them]', 'Bro Tablet Name')
             G.click('[data-test=open-chat]')
-            A.click('[data-test=back]') if A.query_selector('[data-test=back]') else None
             A.evaluate(f"window.pchat.ui.screen('chat', {{conv: '{conv}'}})")
             A.fill('[data-test=message]', 'to-both-devices-TB3')
             A.click('[data-test=send]')
@@ -494,11 +494,10 @@ def run(args, serve, launch):
             words4 = ' '.join(text_in(A, '[data-test=words] li'))
             r_ctx, Rd = device('reader')
             open_app(Rd, link4)
-            Rd.fill('[data-test=name]', 'Reader Rho')
-            Rd.fill('[data-test=call]', 'The news')
             Rd.fill('[data-test=code]', words4)
             Rd.click('[data-test=pair]')
             wait(Rd, "window.pchat.state.screen === 'paired'", 60, 'a reader pairs with the channel')
+            Rd.fill('[data-test=call-them]', 'The news')
             Rd.click('[data-test=open-chat]')
             wait(Rd, "!!document.querySelector('[data-test=read-only]') && !document.querySelector('[data-test=message]')", 20,
                  'a reader has no composer: only the publisher posts')
@@ -759,8 +758,6 @@ def run(args, serve, launch):
                 ctx, page = device(name)
                 page.on('console', lambda m: print('  [' + name + ']', m.type, m.text[:300]) if m.type in ('error', 'warning') else None)
                 open_app(page, link)
-                page.fill('[data-test=name]', 'Ana new phone')
-                page.fill('[data-test=call]', 'Big Brother Pellow')
                 page.fill('[data-test=code]', words)
                 page.click('[data-test=pair]')
                 wait(page, "!!document.querySelector('[data-test=own-fingerprint]')", 60, name + ' shows its own four pictures')
@@ -886,15 +883,18 @@ def run(args, serve, launch):
                        "const t = o.result.transaction('keys', 'readwrite'); t.objectStore('keys').clear(); t.oncomplete = r; }; })")
             open_app(G)
             check(G.evaluate("window.pchat.state.screen") == 'unrecognized' and
-                  'Device not recognized' in G.text_content('[data-test=unrecognized]'), 'keys gone: Device not recognized')
+                  'lost its key' in G.text_content('[data-test=unrecognized]'), 'keys gone: this phone lost its key, said plainly')
+            G.click('[data-test=start-again]')
+            wait(G, "window.pchat && window.pchat.state.screen === 'contacts' && window.pchat.session.conversations().length === 0", 60,
+                 'Start again: a fresh phone, ready to pair')
             # (b) everything cleared, the old link opened again: the invite is used
             g_ctx.close()
             h_ctx, H = device('cleared')
             open_app(H, link3)
             H.fill('[data-test=code]', words3)
             H.click('[data-test=pair]')
-            wait(H, "window.pchat.state.screen === 'error' && document.querySelector('[data-test=error]').textContent.startsWith('Device not recognized')",
-                 60, 'storage cleared, old link: Device not recognized. Ask for a new key.')
+            wait(H, "window.pchat.state.screen === 'error' && document.querySelector('[data-test=error]').textContent.startsWith('This invite was already used')",
+                 60, 'storage cleared, old link: This invite was already used.')
             h_ctx.close()
 
             # ---- 7. the signed service worker keeps a signed bundle ----

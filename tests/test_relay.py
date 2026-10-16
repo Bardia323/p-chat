@@ -2,6 +2,10 @@
 
 Token burn, reusable token cancel, TTL expiry, quotas, room isolation,
 malformed-frame refusal, backpressure, Web Push, and that it says nothing.
+
+    python tests/test_relay.py                      relay/relay.py
+    python tests/test_relay.py --worker relay/worker   the Cloudflare Worker, under `wrangler dev`
+                                                    (no backpressure or relay-held VAPID there: skipped)
 """
 import asyncio
 import base64
@@ -30,7 +34,54 @@ def check(cond, what):
         print('FAIL', what, flush=True)
 
 
+WORKER = None  # the Cloudflare Worker's folder, when it is the one tested
+
+
+class Dev:
+    """`wrangler dev` with a store of its own: started as relay.py would be, its flags as vars."""
+
+    VARS = {'--ttl': 'TTL', '--mailbox-blobs': 'MAILBOX_BLOBS', '--mailbox-bytes': 'MAILBOX_BYTES', '--total-bytes': 'TOTAL_BYTES'}
+
+    def __init__(self, extra):
+        import socket
+        with socket.socket() as s:
+            s.bind(('127.0.0.1', 0))
+            self.port = s.getsockname()[1]
+        self.store = tempfile.mkdtemp(prefix='relay-worker-')
+        cmd = [os.path.expanduser('~/.local/bin/wrangler'), 'dev', '--local', '--ip', '127.0.0.1', '--port', str(self.port),
+               '--persist-to', self.store, '--log-level', 'error']
+        args = list(extra)
+        while args:
+            flag = args.pop(0)
+            if flag == '--push-local':
+                cmd += ['--var', 'PUSH_LOCAL:1']
+            elif flag in self.VARS:
+                cmd += ['--var', f'{self.VARS[flag]}:{args.pop(0)}']
+            else:
+                raise SystemExit('not for the worker: ' + flag)
+        self.p = subprocess.Popen(cmd, cwd=WORKER, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        import urllib.request
+        for _ in range(240):
+            try:
+                urllib.request.urlopen(f'http://127.0.0.1:{self.port}/', timeout=1).read()
+                return
+            except Exception:
+                time.sleep(0.25)
+        raise SystemExit('wrangler dev did not start')
+
+    def terminate(self):
+        import signal
+        os.killpg(self.p.pid, signal.SIGTERM)
+
+    def communicate(self, timeout=None):
+        self.p.wait(timeout)
+        return '', ''
+
+
 def start(*extra):
+    if WORKER:
+        d = Dev(extra)
+        return d, d.port, f'READY {d.port}'
     p = subprocess.Popen([sys.executable, str(RELAY), '--port', '0', *extra],
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     line = p.stdout.readline()
@@ -273,6 +324,11 @@ async def forward_checks(port, endpoint, local):
 
 
 def main():
+    global WORKER
+    if '--worker' in sys.argv:
+        WORKER = str(Path(sys.argv[sys.argv.index('--worker') + 1]).resolve())
+        source = (Path(WORKER) / 'src' / 'index.js').read_text() + (Path(WORKER) / 'src' / 'blake2b.js').read_text()
+        check('console.' not in source, 'the worker logs nothing')
     relay, port, _ = start('--ttl', '600')
     try:
         asyncio.run(main_checks(port))
@@ -288,12 +344,13 @@ def main():
         relay.terminate()
         relay.communicate(timeout=10)
 
-    relay, port, _ = start('--queue', '4')
-    try:
-        asyncio.run(backpressure_checks(port))
-    finally:
-        relay.terminate()
-        relay.communicate(timeout=10)
+    if not WORKER:
+        relay, port, _ = start('--queue', '4')
+        try:
+            asyncio.run(backpressure_checks(port))
+        finally:
+            relay.terminate()
+            relay.communicate(timeout=10)
 
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric import ec
@@ -306,17 +363,20 @@ def main():
         finally:
             relay.terminate()
             relay.communicate(timeout=10)
-    with tempfile.TemporaryDirectory() as d:
-        key = Path(d) / 'vapid.pem'
-        key.write_bytes(ec.generate_private_key(ec.SECP256R1()).private_bytes(
-            serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
-        relay, port, line = start('--vapid-key', str(key))
-        try:
-            asyncio.run(push_checks(port, line.split()[3], f'http://127.0.0.1:{hook.server_port}/push/1'))
-        finally:
-            relay.terminate()
-            relay.communicate(timeout=10)
-            hook.shutdown()
+    if WORKER:
+        hook.shutdown()
+    else:
+        with tempfile.TemporaryDirectory() as d:
+            key = Path(d) / 'vapid.pem'
+            key.write_bytes(ec.generate_private_key(ec.SECP256R1()).private_bytes(
+                serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+            relay, port, line = start('--vapid-key', str(key))
+            try:
+                asyncio.run(push_checks(port, line.split()[3], f'http://127.0.0.1:{hook.server_port}/push/1'))
+            finally:
+                relay.terminate()
+                relay.communicate(timeout=10)
+                hook.shutdown()
 
     if FAILS:
         print(f'sgchat_relay: {len(FAILS)} failed')

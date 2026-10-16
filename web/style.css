@@ -286,7 +286,9 @@ button.label.cream:active { box-shadow: 0 0 0 2px var(--cream), 0 0 0 4px var(--
 .foot .script { font-size: clamp(48px, 15vw, 80px); }
 .lines { border-top: 3px solid var(--ink); }
 .lines::before, .lines::after { content: ''; display: block; height: 2px; background: var(--ink); margin-top: 3px; }
-.toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 99; max-width: 440px; width: calc(100% - 32px);
+/* Centred by its margins: its rising animation moves it with a transform of its own. */
+.toast { position: fixed; left: 16px; right: 16px; bottom: calc(18px + env(safe-area-inset-bottom)); margin: 0 auto; z-index: 99; max-width: 440px;
+  overflow-wrap: anywhere;
   background: var(--ink); color: var(--cream); border-radius: 12px; padding: 12px 14px; font: 600 14px/1.35 var(--sans); }
 .mono { font-family: ui-monospace, monospace; font-size: 13px; overflow-wrap: anywhere; }
 .hidden { display: none !important; }
@@ -495,3 +497,6 @@ details.more .mono { word-break: break-all; }
 
 /* A screen with no bar at its foot: room for the phone's own edge. */
 #app > main:last-child { padding-bottom: calc(28px + env(safe-area-inset-bottom)); }
+
+/* A call key where no relay could bring a dropped call back: said, not used. */
+.call-key.off { opacity: .4; }

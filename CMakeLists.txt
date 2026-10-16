@@ -89,6 +89,13 @@ if(NOT EMSCRIPTEN)
   if(SGCHAT_PYTHON)
     add_test(NAME sgchat_relay COMMAND ${SGCHAT_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_relay.py)
     set_tests_properties(sgchat_relay PROPERTIES TIMEOUT 180)
+    # The same checks against the Cloudflare Worker relay, under `wrangler dev` (when wrangler is here).
+    find_program(SGCHAT_WRANGLER NAMES wrangler PATHS $ENV{HOME}/.local/bin)
+    if(SGCHAT_WRANGLER)
+      add_test(NAME sgchat_relay_worker COMMAND ${SGCHAT_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_relay.py
+               --worker ${CMAKE_CURRENT_SOURCE_DIR}/relay/worker)
+      set_tests_properties(sgchat_relay_worker PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE)
+    endif()
     add_executable(sgchat_bot tests/test_bot.cpp)
     target_link_libraries(sgchat_bot PRIVATE sgchat_host)
     target_include_directories(sgchat_bot PRIVATE tests)

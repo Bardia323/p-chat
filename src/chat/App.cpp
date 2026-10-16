@@ -624,7 +624,7 @@ void App::pump(std::uint64_t now_ms) {
         live_->poll();
         std::string p, channel;
         Bytes bytes;
-        for (int n = 0; n < 512 && live_->receive(p, channel, bytes); ++n) {
+        for (int n = 0; n < 4096 && live_->receive(p, channel, bytes); ++n) {
             if (channel == "envelope") live_in_.push_back(std::move(bytes));
             else if (channel == "blob") blobs_in_.emplace_back(p, std::move(bytes));
             else if (channel == "call") call_chunk(p, bytes);
@@ -1661,7 +1661,7 @@ std::string App::take_request(const Inviting& inv, const Bytes& box, const Key32
         ConversationId id{};
         const auto r = random_bytes(16);
         std::copy(r.begin(), r.end(), id.begin());
-        auto& c = make_conversation(id, req.name.empty() ? "Friend" : req.name, Side::Owner, random_key(), 0, 0,
+        auto& c = make_conversation(id, req.name.empty() ? "New contact" : req.name, Side::Owner, random_key(), 0, 0,
                                     {{self_, Side::Owner, false}, {req.device, Side::Friend, req.mail}}, req.name);
         send_accept(c, inv.invite, req, key, {});
         return "ok";
@@ -1827,7 +1827,7 @@ std::string App::take_accept(const Asking& a, const Bytes& envelope, const Key32
             return std::string("the history does not hold: ") + ex.what();
         }
         if (conversations_.count(hex(acc.conversation))) return "that conversation is here already";
-        const auto called = !a.call.empty() ? a.call : acc.owner_name.empty() ? "Owner" : acc.owner_name;
+        const auto called = !a.call.empty() ? a.call : acc.owner_name.empty() ? "New contact" : acc.owner_name;
         auto& c = make_conversation(acc.conversation, called, rec.replacement.side, acc.secret, acc.secret_generation,
                                     acc.generation, d.members, acc.owner_name, kind);
         const auto persist = [this, cid = c.hexid](const Bytes& b) { persist_agreement(conv(cid), b); };
@@ -1891,7 +1891,7 @@ std::string App::take_accept(const Asking& a, const Bytes& envelope, const Key32
     }
     // The one invited names the one who invited: its own choice, else what
     // they call themselves.
-    const auto called = !a.call.empty() ? a.call : acc.owner_name.empty() ? "Owner" : acc.owner_name;
+    const auto called = !a.call.empty() ? a.call : acc.owner_name.empty() ? "New contact" : acc.owner_name;
     auto& c = make_conversation(acc.conversation, called, Side::Friend, acc.secret, acc.secret_generation, acc.generation,
                                 acc.members, acc.owner_name);
     adopt(c, std::move(resumed));
@@ -2288,6 +2288,8 @@ Key32 App::piece_mailbox_of(const std::string& id, const Key32& blob, std::uint3
 
 void App::handle_signals() {
     for (const auto& s : live_->signals()) {
+        auto& said = said_session_[s.peer][s.lane == sg::net::DeliveryClass::Latest ? 1 : 0];
+        said = std::max(said, s.session);
         for (auto& [id, c] : conversations_) {
             const auto* m = c->member(s.peer);
             if (!m || c->removed) continue;
@@ -2348,7 +2350,20 @@ bool App::signal_into(const Key32& r, const Bytes& box) {
                 c->signal_in[from] = frame.counter;
                 c->heard_in[from] = s.generation;
                 dirty_.insert(id);
-                if (live_) live_->signal(from, frame.signal);
+                if (live_) {
+                    live_->signal(from, frame.signal);
+                    // Heard from a peer whose link is down, under an older session than
+                    // this device's newest for it (it went away and came back, starting
+                    // again): it would never be answered - the engine takes sessions only
+                    // forward. The link is made again, once, so the peer takes up the newer.
+                    const auto lane = frame.signal.lane == sg::net::DeliveryClass::Latest ? 1 : 0;
+                    const auto said = said_session_.find(from);
+                    if (said != said_session_.end() && frame.signal.session < said->second[lane] && !live_->connected(from) &&
+                        now_ >= behind_at_[from] + 15000 && connected_.count(from)) {
+                        behind_at_[from] = now_;
+                        live_->reconnect(from);
+                    }
+                }
             } catch (const std::exception&) {
             }
             return true;

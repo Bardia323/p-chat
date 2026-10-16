@@ -143,6 +143,7 @@ export class Media {
     await this.s.pump();
   }
   async sticker(conv, s) {
+    this.s.reachable(conv);
     const pack = await this.stickers();
     const bytes = new Uint8Array(await (await fetch('stickers/' + s.file)).arrayBuffer());
     const hash = this.chat.blake2b(32, new Uint8Array(0), bytes);
