@@ -699,3 +699,19 @@ in the whole run, `sgchat_link_browser` timing out at Forget ("T has both
 chats") and Split; alone it then passed 5 runs in a row. Open: why only
 after the others.
 
+## v1.8 Table tennis by place - done (protocol 12)
+
+Measured first (tests/test_live.cpp, two worlds, packets 1-6 frames late):
+the own paddle jumped up to 0.19 when a step was agreed (the court took a
+held key from the moment of publishing, the picture from the moment it was
+pressed); the court ran at 150% of real time on a fast link and 46%/31% at
+4/6 frames late. Now: each player publishes, once its screen has played
+past a step, where its paddle is at the step's end (`publish(y)`, a grid
+of 1/1024); the other's number is read from its own packet (`remote_*`,
+the `game_agreed` transport), so both courts take the same numbers; one
+settle round; steps of ten frames, the court's first step 1 (the network's
+step 0 is agreed before anything is published). `CourtSide` (Game.hpp) is
+the host's side: hand, picture (Prediction, lead 60), when to publish.
+Paddles agreed within 0.0005 of the hand at every delay; 99% of real time
+up to 4 frames late (76% at 6, waiting rather than racing).
+

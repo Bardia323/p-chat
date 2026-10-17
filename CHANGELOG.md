@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.8 (2026-10-17): table tennis that answers your hand (protocol 12)
+
+- Your paddle goes where your hand puts it, at once, and stays there: no
+  more jumping back when the other phone's answer comes. Each player now
+  says where its paddle is at the end of each step it has already played,
+  and both courts take exactly those places (measured: within 0.0005 of the
+  hand; before, it jumped by up to 0.19, most of a paddle).
+- The court keeps real time: it ran at 150% on a fast link and slowed to
+  half speed or less on a phone's (46% at a 130 ms round trip). Now 99% up
+  to about 130 ms; slower links wait rather than race.
+- A game is asked in a new way (protocol 12): both players need this
+  version.
+- Sending keeps the keyboard up: the send key no longer takes the focus
+  from what you are writing.
+- A chat that can no longer reach the other side (relays off, the link
+  dropped) says so and offers "Link again" and "Turn a relay on" right
+  there.
+
 ## v1.7 (2026-10-17): faster, linked, and a device that relays (protocol 11)
 
 - Messages between devices arrive at once: a few milliseconds over a live

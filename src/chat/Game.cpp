@@ -15,7 +15,10 @@ using sg::Key;
 using sg::Params;
 using sg::State;
 
-int command(double x) { return x > 0.5 ? 1 : x < -0.5 ? -1 : 0; }
+// Where a paddle is said to be: on the court, and on a grid of 1/1024 - so
+// what the other device learns through the network's solver (agreed to far
+// finer than that) is the very same number on both.
+double place(double y) { return std::round(std::clamp(y, -court_reach, court_reach) * 1024.0) / 1024.0; }
 // An event this state says: its own name, then what it is.
 Key said(const State& s, const char* what) { return Key(s.id().str() + "." + what); }
 
@@ -38,7 +41,7 @@ void begin(State& s, std::int64_t epoch) {
 }  // namespace
 
 void bounce(Params& l, Params& r, Params& b, Params& score) {
-    for (auto* p : {&l, &r}) p->set("y", std::clamp(p->num("y"), -0.65, 0.65));
+    for (auto* p : {&l, &r}) p->set("y", std::clamp(p->num("y"), -court_reach, court_reach));
     double x = b.num("x"), y = b.num("y"), vx = b.num("vx"), vy = b.num("vy");
     if (y > 0.749) y = 1.498 - y, vy = -std::fabs(vy);
     if (y < -0.749) y = -1.498 - y, vy = std::fabs(vy);
@@ -79,11 +82,16 @@ sg::net::Prediction::Step court_forecast(const State& game) {
     };
     const auto ball = declared("move_ball"), left = declared("move_left"), right = declared("move_right");
     return [ball, left, right](const sg::net::PredictedValues& x, const sg::net::DiscreteInputs& input) {
-        if (x.size() != 11 || input.size() != 2 || std::abs(input[0]) > 1 || std::abs(input[1]) > 1) throw std::invalid_argument("not a court");
+        if (x.size() != 11 || input.size() != 2) throw std::invalid_argument("not a court");
+        // An input is where a player has its paddle, in millionths.
+        const auto toward = [](double y, std::int64_t at) {
+            if (std::llabs(at) > 1000000) throw std::invalid_argument("not on the court");
+            return std::clamp((double(at) / 1e6 - y) / court_step, -1.2 * court_speed, 1.2 * court_speed);
+        };
         Element b{Key{"ball"}, Key{}}, l{Key{"left"}, Key{}}, r{Key{"right"}, Key{}};
         b.params.set("x", x[0]).set("y", x[1]).set("vx", x[2]).set("vy", x[3]);
-        l.params.set("y", x[4]).set("vy", 0.95 * double(input[0]));
-        r.params.set("y", x[6]).set("vy", 0.95 * double(input[1]));
+        l.params.set("y", x[4]).set("vy", toward(x[4], input[0]));
+        r.params.set("y", x[6]).set("vy", toward(x[6], input[1]));
         Params score;
         score.set("left_score", std::int64_t(x[8])).set("right_score", std::int64_t(x[9])).set("hits", std::int64_t(x[10]));
         const auto args = Params{}.set("duration", court_step);
@@ -95,6 +103,47 @@ sg::net::Prediction::Step court_forecast(const State& game) {
                                         l.params.num("y"), l.params.num("vy"), r.params.num("y"), r.params.num("vy"),
                                         score.num("left_score"), score.num("right_score"), score.num("hits")};
     };
+}
+
+namespace {
+std::int64_t millionths(double y) { return std::llround(std::clamp(y, -court_reach, court_reach) * 1e6); }
+// The court frame a step begins at: its first step is 1, at frame 0.
+std::uint64_t court_tick(const State& game, std::int64_t epoch) {
+    return std::uint64_t(std::max<std::int64_t>(epoch - 1, 0)) * std::uint64_t(std::clamp<std::int64_t>(game.params().get_or<std::int64_t>("steps", 1), 1, 30));
+}
+std::uint64_t court_steps(const State& game) { return std::uint64_t(std::clamp<std::int64_t>(game.params().get_or<std::int64_t>("steps", 1), 1, 30)); }
+}  // namespace
+
+CourtSide::CourtSide(const State& game, int player)
+    : player_(player), prediction_(court_forecast(game), court_lead, 128, {1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0}) {
+    prediction_.reset(0, court_frame(game));
+    hands_[0] = hand_;
+}
+
+std::optional<double> CourtSide::before(const State& game) {
+    hand_ = std::clamp(hand_ + court_speed * double(move_) * court_step, -court_reach, court_reach);
+    sg::net::DiscreteInputs in{0, 0};
+    in[std::size_t(player_)] = millionths(hand_);
+    in[std::size_t(1 - player_)] = millionths(theirs_);
+    // Too far ahead of what is agreed (a link slower than a step): the picture
+    // waits for it; the hand still answers.
+    if (prediction_.advance(in)) hands_[prediction_.predicted_tick()] = hand_;
+    const auto epoch = game.params().get_or<std::int64_t>("epoch", 0);
+    if (game.params().get_or<std::int64_t>("published", -1) == epoch) return std::nullopt;
+    const auto end = hands_.find(court_tick(game, epoch + 1));
+    if (end == hands_.end()) return std::nullopt;
+    return end->second;
+}
+
+void CourtSide::after(const State& game, double time) {
+    const auto epoch = game.params().get_or<std::int64_t>("epoch", 0);
+    if (epoch == last_epoch_) return;
+    last_epoch_ = epoch;
+    const auto tick = court_tick(game, epoch);
+    prediction_.reconcile(tick, court_frame(game), time);
+    // The other's paddle, until told more: where it was last put.
+    theirs_ = game.element("control").params.num(Key{"theirs_" + std::to_string(1 - player_)}, 0);
+    hands_.erase(hands_.begin(), hands_.lower_bound(tick));
 }
 
 sg::dsl::Natives game_natives() {
@@ -109,18 +158,16 @@ sg::dsl::Natives game_natives() {
         s.element("p0").params.set("publishes", player == 0).set("coordinate", std::int64_t{0});
         s.element("p1").params.set("publishes", player == 1).set("coordinate", std::int64_t{1});
     });
-    n.arrow("game_input", [](State& s, Element&, Element*, const Event& e) {
-        if (!e.args.has("move")) return;
+    // The step to come published, once, with where this player's paddle is
+    // at its end: its player has played past it.
+    n.arrow("game_publish", [](State& s, Element&, Element*, const Event& e) {
+        const auto epoch = s.params().get_or<std::int64_t>("epoch", 0);
+        if (!e.args.has("y") || s.params().get_or<std::int64_t>("published", -1) == epoch) return;
         const auto player = static_cast<int>(s.params().num("player"));
-        auto& p = s.element(Key{"p" + std::to_string(player)}).params;
-        const Key coordinate{"value_" + std::to_string(player)};
-        const double move = command(e.args.num("move"));
-        if (p.num(coordinate) != move) {
-            p.set(coordinate, move);
-            s.emit(said(s, "input.changed"));
-        }
+        s.element(Key{"p" + std::to_string(player)}).params.set(Key{"value_" + std::to_string(player)}, place(e.args.num("y")));
+        s.params().set("published", epoch);
+        publish_world(s);
     });
-    n.arrow("game_publish", [](State& s, Element&, Element*, const Event&) { publish_world(s); });
     n.transport("game_publish_to", [](const Element& from, Element& to) {
         if (!from.params.get_or<bool>("publishes", false)) return;
         for (int c = 0; c < 2; ++c) {
@@ -134,6 +181,15 @@ sg::dsl::Natives game_natives() {
         for (int c = 0; c < 2; ++c) {
             const auto suffix = "_" + std::to_string(c);
             if (from.params.has(Key{"result" + suffix})) to.params.set(Key{"command" + suffix}, from.params.get(Key{"result" + suffix}));
+        }
+    });
+    // What the other device said of its own paddle, as its own packet carried
+    // it: the very number it pinned (the solver's agreement on this side is
+    // near it, not it), so both courts move by the same numbers.
+    n.transport("game_agreed", [](const Element& from, Element& to) {
+        for (int c = 0; c < 2; ++c) {
+            const Key remote{"remote_" + std::to_string(c)};
+            if (from.params.has(remote)) to.params.set(Key{"theirs_" + std::to_string(c)}, from.params.get(remote));
         }
     });
     n.arrow("game_corrected", [](State& s, Element& control, Element*, const Event& e) {
@@ -150,24 +206,34 @@ sg::dsl::Natives game_natives() {
         const auto steps = std::clamp<std::int64_t>(s.params().get_or<std::int64_t>("steps", 1), 1, 30);
         for (std::int64_t i = 0; i < steps; ++i) s.emit({said(s, "ready"), Params{}.set("duration", court_step)});
     });
+    // Each paddle goes straight to where its player put it, arriving at the
+    // step's end.
     n.arrow("game_commands", [](State& s, Element&, Element*, const Event& e) {
-        if (e.args.num("duration") <= 0) return;
+        const double duration = e.args.num("duration");
+        if (duration <= 0) return;
         const auto player = static_cast<int>(s.params().num("player"));
         const auto& p = s.element(Key{"p" + std::to_string(player)}).params;
-        s.element("left").params.set("vy", 0.95 * command(p.num("command_0")));
-        s.element("right").params.set("vy", 0.95 * command(p.num("command_1")));
+        const auto steps = std::clamp<std::int64_t>(s.params().get_or<std::int64_t>("steps", 1), 1, 30);
+        const double left = double(steps - std::clamp<std::int64_t>(s.params().get_or<std::int64_t>("step", 0), 0, steps - 1)) * duration;
+        const auto& theirs = s.element("control").params;
+        for (int k = 0; k < 2; ++k) {
+            auto& paddle = s.element(k == 0 ? "left" : "right").params;
+            // This player's own place as it pinned it; the other's as it pinned it.
+            const auto key = std::to_string(k);
+            const double to = place(k == player ? p.num(Key{"command_" + key}) : theirs.num(Key{"theirs_" + key}, 0));
+            paddle.set("vy", (to - paddle.num("y")) / left);
+        }
     });
     n.arrow("game_bounce", [](State& s, Element&, Element*, const Event& e) {
         if (e.args.num("duration") <= 0) return;
         bounce(s.element("left").params, s.element("right").params, s.element("ball").params, s.params());
-        // The epoch's last step: the next epoch begins, and its controls are published.
         const auto step = s.params().get_or<std::int64_t>("step", 0) + 1;
         if (step < std::clamp<std::int64_t>(s.params().get_or<std::int64_t>("steps", 1), 1, 30)) {
             s.params().set("step", step);
             return;
         }
+        // The epoch's last step: the next is published when its players have played it.
         s.params().set("step", std::int64_t{0}).set("epoch", s.params().get_or<std::int64_t>("epoch", 0) + 1);
-        publish_world(s);
     });
     // ---- its network ----
     n.arrow("rally_configure", [](State& s, Element&, Element*, const Event& e) {

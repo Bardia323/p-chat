@@ -684,7 +684,7 @@ def run(args, serve, launch):
             A.dispatch_event('[data-test=up]', 'pointerup')
             ga, gf = A.evaluate("window.pchat.session.app.games()[0]"), F.evaluate("window.pchat.session.app.games()[0]")
             print(f"   tape tennis: steps {ga['epoch']}/{gf['epoch']}, score {ga['left']}-{ga['right']} / {gf['left']}-{gf['right']}, prediction ahead {ga['lead']}/{gf['lead']}")
-            check(ga['lead'] <= 24 and gf['lead'] <= 24, 'the picture runs ahead of what is agreed, within its bound (court_lead, 24 frames)')
+            check(ga['lead'] <= 60 and gf['lead'] <= 60, 'the picture runs ahead of what is agreed, within its bound (court_lead, 60 frames)')
             A.screenshot(path=str(work / 'game.png'))
             A.click('[data-test=stop-game]')
             wait(F, "window.pchat.state.screen === 'chat'", 30, 'stopped: back to the chat for both')

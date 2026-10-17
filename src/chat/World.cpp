@@ -362,10 +362,10 @@ sg::dsl::Natives natives() {
         if (g.contains(game_state(id))) return done(false, "that game is there already");
         auto n = natives();
         const auto gn = game_natives();
-        for (const char* a : {"game_configure", "game_input", "game_publish", "game_corrected", "game_step", "game_commands",
+        for (const char* a : {"game_configure", "game_publish", "game_corrected", "game_step", "game_commands",
                               "game_bounce", "rally_configure", "rally_begin", "rally_receive", "rally_solve"})
             n.arrow(a, gn.arrow(a));
-        for (const char* t : {"game_publish_to", "game_correct"}) n.transport(t, gn.transport(t));
+        for (const char* t : {"game_publish_to", "game_correct", "game_agreed"}) n.transport(t, gn.transport(t));
         apply_source(g, replaced(game_template(), {{"GAME", game_state(id)}, {"NET", game_net_state(id)}, {"TIME", game_time_state(id)},
                                                    {"CONV", conv}, {"\"ID\"", "\"" + hex(Bytes(id.begin(), id.end())) + "\""}}),
                      n);

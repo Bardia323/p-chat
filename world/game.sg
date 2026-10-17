@@ -1,21 +1,25 @@
-# A game of two in a conversation (tape tennis), as the game.start edit
+# A game of two in a conversation (table tennis), as the game.start edit
 # makes it: GAME is the court's state (g_ and the game id), NET its
 # network (n_ and the game id), TIME the game's time (t_ and the game id),
 # CONV the conversation, ID the game id.
 #
 # The same court on both players' devices; neither is the authority. Each
-# step, each player's control (up, down, still) is published into the
-# network, where it is that player's participant's pinned coordinate; the
-# shared constraint makes both participants agree, so each device learns
-# the other's control from the engine's Distributed reconciliation (its
-# boundary packets carried between the two devices outside the world), and
-# when both have settled the step is committed and the court moves - the
-# same motion on both, by the same declared arrows: `steps` steps of 1/60 s
-# with the controls agreed (so the court keeps near real time though an
-# agreement takes a round trip). The game's time is a
-# state of its own, made with it: the court and its network each step on a
-# line of their own there. The court is shown in its conversation,
-# embedded at its `table` portal.
+# step (`steps` frames of 1/60 s), each player says where its paddle is at
+# the step's end - where its own hand had put it, the step already played
+# on its own screen - and publishes it into the network, where it is that
+# player's participant's pinned coordinate; the shared constraint makes
+# both participants agree, so each device learns the other's from the
+# engine's Distributed reconciliation (its boundary packets carried between
+# the two devices outside the world). When both have settled, the step is
+# committed and the court moves: each paddle straight to where its player
+# put it, the ball by the same declared arrows - the same motion on both.
+# A step is published only once its player has played past it, so the
+# court keeps to real time and never runs ahead of either screen. The
+# court's first step is 1: the network's own first (0) is agreed before
+# anything is published, and is not the court's. The
+# game's time is a state of its own, made with it: the court and its
+# network each step on a line of their own there. The court is shown in
+# its conversation, embedded at its `table` portal.
 
 extern state CONV
 state TIME : temporal
@@ -23,8 +27,9 @@ state TIME : temporal
 state GAME {
     game = "ID"
     player = int(0)
-    epoch = int(0)
-    steps = int(6)
+    epoch = int(1)
+    steps = int(10)
+    published = int(-1)
     step = int(0)
     left_score = int(0)
     right_score = int(0)
@@ -57,8 +62,7 @@ state GAME {
         vy = 0.27
     }
     control -> control : configure on GAME.configure native game_configure
-    control -> control : input(move) on GAME.input native game_input
-    control -> control : publish on GAME.publish native game_publish
+    control -> control : publish(y) on GAME.publish native game_publish
     control -> control : corrected on GAME.corrected native game_corrected
     control -> control : step(dt) on GAME.step native game_step
     control -> control : commands on GAME.motion native game_commands
@@ -68,7 +72,6 @@ state GAME {
     control -> control : bounce on GAME.motion native game_bounce
     say GAME.published
     say GAME.ready
-    say GAME.input.changed
 }
 
 state NET {
@@ -80,7 +83,7 @@ state NET {
     diffusion_step = 0.5
     iterations = int(32)
     relaxation = 0.9
-    settle_rounds = int(2)
+    settle_rounds = int(1)
     element control
     element p0 : participant {
         dim = int(2)
@@ -123,6 +126,7 @@ functor GAME_publish : GAME -> NET {
 functor GAME_correct : NET -> GAME {
     object p0 -> p0 native game_correct
     object p1 -> p1 native game_correct
+    object shared -> control native game_agreed
     event NET.committed -> GAME.corrected
 }
 functor GAME_motion : GAME -> GAME {
@@ -131,7 +135,6 @@ functor GAME_motion : GAME -> GAME {
 }
 
 port GAME.configure
-port GAME.input
 port GAME.publish
 port NET.configure
 port NET.receive

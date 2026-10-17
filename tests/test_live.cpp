@@ -1,5 +1,5 @@
-// v1 §11: live state. Tape tennis, two worlds and nothing between them but
-// the network's boundary packets (two frames late, as a link would be): the
+// v1 §11: live state. Table tennis, two worlds and nothing between them but
+// the network's boundary packets (1 to 6 frames late, as a link would be): the
 // court is a state of each world, embedded in its conversation; the
 // controls agree by the engine's Distributed reconciliation; both worlds
 // play the very same game, step for step; the engine's Prediction shows it
@@ -27,12 +27,72 @@ struct World {
 };
 }  // namespace
 
+namespace {
+struct Played {
+    std::int64_t epochs = 0;
+    double real = 0;         // court frames agreed per frame played
+    double placed = 0;       // the largest gap between a paddle agreed and the hand that put it
+    bool same = true, behind = true, hit = false;
+    std::uint64_t lead = 0;
+};
+// Two worlds, each with its host's side of the court; what each network says
+// reaches the other `late` frames later. Each player moves its own way.
+Played play(int late, World& a, World& b) {
+    CourtSide sa(a.graph.state(a.game), 0), sb(b.graph.state(b.game), 1);
+    std::map<std::int64_t, sg::net::PredictedValues> frames_a, frames_b;
+    std::map<std::uint64_t, double> hand_a;
+    Played out;
+    double time = 0;
+    const int frames = 1800;
+    for (auto* s : {&a, &b}) s->out.clear();
+    for (int f = 0; f < frames; ++f) {
+        sa.steer((f / 45) % 2 ? 1 : -1);
+        sb.steer((f / 70) % 3 == 0 ? -1 : 1);
+        for (auto [s, side] : {std::pair{&a, &sa}, std::pair{&b, &sb}})
+            if (const auto y = side->before(s->graph.state(s->game))) {
+                s->engine->send(s->game, {s->game + ".publish", sg::Params{}.set("y", *y)});
+            }
+        hand_a.emplace(sa.picture().predicted_tick(), sa.hand());  // as the side keeps it: the frame it was played
+        for (auto* s : {&a, &b}) s->engine->tick(court_step);
+        time += court_step;
+        for (auto [s, side] : {std::pair{&a, &sa}, std::pair{&b, &sb}}) side->after(s->graph.state(s->game), time);
+        for (auto [from, to] : {std::pair{&a, &b}, std::pair{&b, &a}}) {
+            for (auto& [wait, packet] : from->out) --wait;
+            while (!from->out.empty() && from->out.front().first <= 0) {
+                to->engine->send(to->net, {to->net + ".receive", sg::net::Exchange::arguments(from->out.front().second)});
+                from->out.pop_front();
+            }
+        }
+        const auto& ca = a.graph.state(a.game);
+        const auto ea = ca.params().get_or<std::int64_t>("epoch", 0);
+        const auto eb = b.graph.state(b.game).params().get_or<std::int64_t>("epoch", 0);
+        const auto steps = std::uint64_t(ca.params().get_or<std::int64_t>("steps", 1));
+        const auto tick = std::uint64_t(ea - 1) * steps;
+        if (!frames_a.count(ea) && ea > 1 && hand_a.count(tick)) out.placed = std::max(out.placed, std::fabs(court_frame(ca)[4] - hand_a[tick]));
+        frames_a[ea] = court_frame(ca);
+        frames_b[eb] = court_frame(b.graph.state(b.game));
+        out.behind &= tick <= sa.picture().predicted_tick();
+        out.lead = std::max(out.lead, sa.picture().predicted_tick() - sa.picture().finalized_tick());
+    }
+    out.epochs = std::min(frames_a.rbegin()->first, frames_b.rbegin()->first);
+    const auto steps = a.graph.state(a.game).params().get_or<std::int64_t>("steps", 1);
+    out.real = double((out.epochs - 1) * steps) / frames;
+    for (std::int64_t e = 1; e <= out.epochs && out.same; ++e)
+        if (frames_a.count(e) && frames_b.count(e)) out.same &= frames_a[e] == frames_b[e];
+    out.hit = frames_a[out.epochs][10] > 0 || frames_a[out.epochs][8] + frames_a[out.epochs][9] > 0;
+    std::printf("table tennis, packets %d frames late: %lld steps, %.0f%% of real time; paddles agreed within %.4f of the hands; picture ahead by at most %llu\n",
+                late, (long long)out.epochs, 100 * out.real, out.placed, (unsigned long long)out.lead);
+    return out;
+}
+}  // namespace
+
 int main() {
     sg::set_observers(sg::Observers::Strict);
     ConversationId conv{};
     conv[0] = 0x31;
+    for (const int late : {1, 2, 4, 6}) {
     CallId id{};
-    id[0] = 0x47;
+    id[0] = std::uint8_t(0x40 + late);
     World a, b;
     for (auto* s : {&a, &b}) {
         build_world(s->graph);
@@ -53,63 +113,30 @@ int main() {
     CHECK_MSG(embedded, "the court is embedded in its conversation");
     int player = 0;
     for (auto* s : {&a, &b}) {
-        s->graph.state(s->net).bus().subscribe(s->net + ".boundary", [s](const sg::Event& e) {
-            s->out.emplace_back(2, sg::net::Exchange::bytes(e.args));
+        s->graph.state(s->net).bus().subscribe(s->net + ".boundary", [s, late](const sg::Event& e) {
+            s->out.emplace_back(late, sg::net::Exchange::bytes(e.args));
         });
         const auto config = sg::Params{}.set("player", std::int64_t(player++));
         s->engine->send(s->game, {s->game + ".configure", config});
         s->engine->send(s->net, {s->net + ".configure", config});
-        s->engine->send(s->game, {s->game + ".publish", {}});
         s->engine->tick(0);
     }
-    sg::net::Prediction prediction(court_forecast(a.graph.state(a.game)), 12, 128, {1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0});
-    prediction.reset(0, court_frame(a.graph.state(a.game)));
-    std::int64_t last = 0;
-    std::uint64_t lead = 0;
-    double time = 0;
-    std::map<std::int64_t, sg::net::PredictedValues> frames_a, frames_b;
-    for (int f = 0; f < 1800; ++f) {
-        // Each plays: up for a while, then down, each its own way.
-        const double ma = (f / 45) % 2 ? 1.0 : -1.0, mb = (f / 70) % 3 == 0 ? -1.0 : 1.0;
-        a.engine->send(a.game, {a.game + ".input", sg::Params{}.set("move", ma)});
-        b.engine->send(b.game, {b.game + ".input", sg::Params{}.set("move", mb)});
-        for (auto* s : {&a, &b}) s->engine->tick(court_step);
-        time += court_step;
-        // The links: what each said reaches the other two frames later.
-        for (auto [from, to] : {std::pair{&a, &b}, std::pair{&b, &a}}) {
-            for (auto& [wait, packet] : from->out) --wait;
-            while (!from->out.empty() && from->out.front().first <= 0) {
-                to->engine->send(to->net, {to->net + ".receive", sg::net::Exchange::arguments(from->out.front().second)});
-                from->out.pop_front();
-            }
-        }
-        const auto ea = a.graph.state(a.game).params().get_or<std::int64_t>("epoch", 0);
-        const auto eb = b.graph.state(b.game).params().get_or<std::int64_t>("epoch", 0);
-        frames_a[ea] = court_frame(a.graph.state(a.game));
-        frames_b[eb] = court_frame(b.graph.state(b.game));
-        prediction.advance({std::int64_t(ma), 0});
-        if (ea != last) {
-            prediction.reconcile(std::uint64_t(ea) * 6, court_frame(a.graph.state(a.game)), time);
-            last = ea;
-        }
-        lead = std::max(lead, prediction.predicted_tick() - prediction.finalized_tick());
-    }
-    const auto epochs = std::min(frames_a.rbegin()->first, frames_b.rbegin()->first);
-    bool same = epochs > 100;
-    for (std::int64_t e = 0; e <= epochs && same; ++e)
-        if (frames_a.count(e) && frames_b.count(e)) same &= frames_a[e] == frames_b[e];
-    std::printf("tape tennis: %lld steps agreed in 1800 frames (packets two frames late), %lld court frames - %.0f%% of real time; score %g-%g, %g hits; prediction ahead by at most %llu\n",
-                (long long)epochs, (long long)epochs * 6, 100.0 * double(epochs) * 6 / 1800, frames_a[epochs][8], frames_a[epochs][9],
-                frames_a[epochs][10], (unsigned long long)lead);
-    CHECK_MSG(epochs * 6 >= 1800 * 6 / 10, "the court keeps at least 60% of real time over a link two frames long");
-    CHECK_MSG(same, "both worlds play the very same game, step for step");
-    CHECK_MSG(frames_a[epochs][10] > 0 || frames_a[epochs][8] + frames_a[epochs][9] > 0, "the ball was hit or a point was scored");
-    CHECK_MSG(lead <= court_lead, "the prediction stays within its lead");
+    const auto r = play(late, a, b);
+    CHECK_MSG(r.same, "both worlds play the very same game, step for step");
+    CHECK_MSG(r.behind, "the court never runs ahead of the screen");
+    CHECK_MSG(r.placed <= 1.0 / 1024 + 1e-9, "each paddle is agreed where its player's hand put it");
+    CHECK_MSG(r.lead <= court_lead, "the picture stays within its lead");
+    CHECK_MSG(r.hit, "the ball was hit or a point was scored");
+    // A round trip up to eight frames (a phone's link): the court keeps real time.
+    if (late <= 4) CHECK_MSG(r.real >= 0.95, "the court keeps to real time over a link this long");
+    CHECK_MSG(r.real <= 1.0, "and never faster");
     CHECK_MSG(sg::verify(a.graph).ok() && sg::verify(b.graph).ok(), "the laws still hold after the game");
+    if (late != 6) continue;
     a.engine->send("contacts", {"game.end", game_args(conv, id)});
     a.engine->tick(0), a.engine->tick(0);
     CHECK_MSG(!a.graph.contains(a.game) && !a.graph.contains(a.net) && !a.graph.contains(game_time_state(id)), "a game ends by its edit");
     CHECK(a.graph.validate().empty());
+    }
 
     // The whiteboard: three devices look at it, each its own way; one leads,
     // and the engine's Reconcile brings every view to where it looks.

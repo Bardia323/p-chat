@@ -594,6 +594,13 @@ async function renderChat(first) {
   // No relay and no link to them: nothing can reach them, so nothing is sent
   // (one side moving on alone is what a chat must never do).
   const cut = !info.removed && !session.canSend(id);
+  // Cut off: say why and the two ways back, right here.
+  if (cut && !info.left && !info.leaving) banners.push(h('div', { class: 'banner', 'data-test': 'cut' }, h('b', {}, 'Not reachable'),
+    session.relayOn() ? 'No link to them, and this chat has no relay. Link again: one of you shows a code, the other scans it.'
+      : 'Relays are off and the link between you dropped (a phone asleep is enough). Link again in person, or turn a relay on: it only passes locked messages.',
+    h('div', { class: 'row' },
+      h('button', { class: 'btn', 'data-test': 'cut-relink', onclick: () => show('relink', { relink: null, relinkCode: null, relinkLink: null, relinkDone: false, relinkFrom: id }) }, 'Link again'),
+      session.relayOn() ? null : h('button', { class: 'btn light', 'data-test': 'cut-relay', onclick: async () => { await session.setRelay(true); renderChat(false); } }, 'Turn a relay on'))));
   const shut = info.removed || info.left || info.leaving;
   const input = h('textarea', { rows: 1, placeholder: info.left || info.leaving ? 'Read only' : info.removed ? 'Removed' : cut ? 'Not linked to them, and no relay: can\'t send now' : 'Message',
     disabled: shut || cut, 'data-test': 'message', dir: 'auto', maxlength: 20000, 'aria-label': 'Message' });
@@ -631,9 +638,17 @@ async function renderChat(first) {
     await session.send(id, t);
     await renderChat(false);
     toEnd();
-    root.querySelector('[data-test=message]')?.focus();
   };
   key.onclick = () => (rec || !input.value.trim() ? voice() : send());
+  // Sending from the keyboard keeps it up: the key never takes the focus
+  // from what is being written (a phone would drop its keyboard and raise it
+  // again). Sent on the finger's lift, so no click (and no blur) follows.
+  key.addEventListener('mousedown', (e) => { if (document.activeElement === input) e.preventDefault(); });
+  key.addEventListener('touchend', (e) => {
+    if (document.activeElement !== input || rec || !input.value.trim() || key.disabled) return;
+    e.preventDefault();
+    send();
+  }, { passive: false });
   input.addEventListener('input', () => keyShows());
   const pick = (accept, kind) => {
     const f = h('input', { type: 'file', accept, class: 'hidden', 'data-test': 'file-' + kind });
@@ -909,7 +924,7 @@ async function renderRelink() {
     draw(head('Link again', { small: true, back: () => show('contacts') }), h('main', {},
       h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Linked again'), h('p', { class: 'caps light' }, 'The rest come back through it')),
       h('div', { class: 'pad' }, h('p', { class: 'fine', 'data-test': 'relink-status' }, 'Linked again.'),
-        h('button', { class: 'btn wide', 'data-test': 'relink-done', onclick: () => show('contacts') }, 'Done'))));
+        h('button', { class: 'btn wide', 'data-test': 'relink-done', onclick: () => state.relinkFrom ? show('chat', { conv: state.relinkFrom }) : show('contacts') }, 'Done'))));
     return;
   }
   if (state.relink) {
@@ -953,7 +968,7 @@ async function renderRelink() {
     try { await session.theirCode(text); renderRelinkStatus('Joining…'); } catch (e) { toast(e.message); }
   };
   const pasted = h('input', { autocomplete: 'off', spellcheck: 'false', autocapitalize: 'none', placeholder: 'p-chat:a1.…', 'data-test': 'relink-text' });
-  draw(head('Link again', { small: true, back: () => { session.endPairing(); state.relinkLink = null; show('settings'); } }), h('main', {},
+  draw(head('Link again', { small: true, back: () => { session.endPairing(); state.relinkLink = null; state.relinkFrom ? show('chat', { conv: state.relinkFrom }) : show('settings'); } }), h('main', {},
     h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Let them scan this'), h('p', { class: 'caps light' }, 'A device you are paired with')),
     h('div', { class: 'pad' }, h('img', { class: 'qr', alt: 'Your code to link again', src: qr.createDataURL(8, 0), 'data-test': 'relink-link', 'data-link': state.relinkLink }),
       h('div', { class: 'row' }, h('button', { class: 'btn light', 'data-test': 'copy-relink-link', onclick: async () => {
@@ -1037,7 +1052,7 @@ async function scanned() {
     const frag = at >= 0 ? text.slice(at + 1) : '';
     state.pairing = null;
     if (frag.startsWith('d1.')) return show('meet', { meet: frag, meetCode: null, meetAsked: false });
-    if (frag.startsWith('l1.')) return show('relink', { relink: frag, relinkCode: null, relinkDone: false });
+    if (frag.startsWith('l1.')) return show('relink', { relink: frag, relinkCode: null, relinkDone: false, relinkFrom: null });
     if (frag.startsWith('v1.')) { invite = frag; return show('pair'); }
     toast('That is not a p-chat code.');
   });
@@ -1648,7 +1663,7 @@ async function renderSettings() {
       h('p', { class: 'fine', 'data-test': 'relays-state' }, relaying
         ? 'On. Leave it open and plugged in - a computer on a desk is best. Your contacts give it their locked messages first, and it keeps them for 14 days, even if it is closed and opened again. It helps your contacts find each other. It cannot read anything.'
         : 'Off. Turn it on for a device you leave open: it then does a relay\'s work for your contacts, with no relay.'),
-      h('div', { class: 'row' }, h('button', { class: 'btn light', 'data-test': 'relink', onclick: () => show('relink', { relink: null, relinkCode: null, relinkLink: null, relinkDone: false }) },
+      h('div', { class: 'row' }, h('button', { class: 'btn light', 'data-test': 'relink', onclick: () => show('relink', { relink: null, relinkCode: null, relinkLink: null, relinkDone: false, relinkFrom: null }) },
         'Link again in person')),
       h('p', { class: 'fine' }, 'Lost every link, with no relay? Scan a code with a contact, or with your device that relays: the rest come back through it.')),
     h('div', { class: 'pad' },
@@ -1743,7 +1758,7 @@ async function start() {
   const booted = await session.boot();
   if (!booted || state.screen === 'unsupported' || state.screen === 'unrecognized') return;
   if (meeting) return show('meet', { meet: meeting, meetCode: null, meetAsked: false });
-  if (relinking) return show('relink', { relink: relinking, relinkCode: null, relinkDone: false });
+  if (relinking) return show('relink', { relink: relinking, relinkCode: null, relinkDone: false, relinkFrom: null });
   if (invite) return show('pair');
   const a = await store.asking();
   if (a) { state.pairing = 'asked'; invite = invite || null; }
@@ -1758,7 +1773,7 @@ addEventListener('hashchange', () => {
   if (!session.chat) return;
   state.pairing = null;
   if (h.startsWith('d1.')) show('meet', { meet: h, meetCode: null, meetAsked: false });
-  else if (h.startsWith('l1.')) show('relink', { relink: h, relinkCode: null, relinkDone: false });
+  else if (h.startsWith('l1.')) show('relink', { relink: h, relinkCode: null, relinkDone: false, relinkFrom: null });
   else { invite = h; show('pair'); }
 });
 start().catch((e) => { draw(h('main', {}, h('div', { class: 'pad' }, h('p', { class: 'caps' }, 'p-chat could not start'), h('p', {}, e.message)))); });

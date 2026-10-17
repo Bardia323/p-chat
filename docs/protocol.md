@@ -1,4 +1,4 @@
-# The sgchat protocol, 11
+# The sgchat protocol, 12
 
 What travels between two devices running p-chat, and what the relay sees. Every layout
 here is what `src/chat/` makes; `tests/vectors/v4.json` holds the bytes for
@@ -8,7 +8,13 @@ page and the code disagree, the vectors decide, and one of them is a bug.
 
 ## Versions
 
-**Protocol 11** (this page) lets a connection watch its mailboxes at the
+**Protocol 12** (this page) changes table tennis: a player says where its
+paddle is at the end of each step it has already played (not up or down),
+and a game is asked with `what` 3; an ask of before (0) is not taken, as
+the two courts would not be one court. Nothing a message carries changed
+(content version 11).
+
+**Protocol 11** lets a connection watch its mailboxes at the
 relay (op 4) and be told at once that mail is waiting in one (pushed frame
 `0x41`): a device fetches when it is told, not at its next round; a device
 still talks to a protocol 10 relay, which refuses the op, and fetches each
@@ -604,29 +610,37 @@ sound to everyone.
 
 ## Live state (protocol 8)
 
-**Tape tennis**, a game of two in a two-sided conversation:
+**Table tennis**, a game of two in a two-sided conversation:
 
-    game = u8 8 | game(16) | u8 what (0 asks, 1 plays, 2 stops)
+    game = u8 8 | game(16) | u8 what (3 asks, 1 plays, 2 stops; 0, an ask before protocol 12, is not taken)
 
 The one who asks plays left (player 0). Each device makes the court in its
 world (`world/game.sg`, the `game.start` and `game.end` edits at the book):
 the court `g_<game>`, its network `n_<game>` and its time `t_<game>`
 (a Temporal of its own); the court is embedded in the conversation at its
-`table` portal. Each step, a player's control (-1, 0, 1) is published into
-the network, where it is that player's participant's pinned coordinate;
-the shared constraint makes both participants agree, and the engine's
-Distributed reconciliation carries it - its boundary packets (`sg::net::
-Exchange` bytes) go on the live link's Latest lane:
+`table` portal. The court goes in steps of ten frames of 1/60 s, the first
+step numbered 1. Each player moves its paddle on its own screen at once
+(its hand: 0.95 a second while a key is held, within ±0.65); once its screen
+has played past a step's end, it publishes the step with where its paddle
+is at that end, on a grid of 1/1024 (`publish(y)`): that is its
+participant's pinned coordinate in the network. The engine's Distributed
+reconciliation carries it - its boundary packets (`sg::net::Exchange`
+bytes) go on the live link's Latest lane:
 
     game packet = u8 8 | game(16) | packet
 
 each in a slot of its own; the last two are said again every three frames
 until the step is agreed (one lost, or overtaken, costs a little time,
-never the game). When both have settled (two rounds) the step is
-committed, and the court moves six steps of 1/60 s with the controls
-agreed - the same motion on both devices, by the same declared arrows. The
-picture is the engine's Prediction of the court, ahead of what is agreed
-by at most twelve frames, corrected when it is.
+never the game). When both have settled (one round) the step is committed:
+each paddle is taken where its own player pinned it - its own number on
+its own side, and the other's as the other's packet carried it, so both
+courts move by the very same numbers - and the court moves the step's ten
+frames, each paddle straight to its place, the ball by the same declared
+arrows. A step is published only once played, so the court keeps to real
+time and never runs ahead of either screen (with a round trip up to about
+eight frames; on a slower link it waits). The picture is the engine's
+Prediction of the court, ahead of what is agreed by at most sixty frames;
+this player's own paddle is drawn where its hand is, never corrected.
 
 **The whiteboard** of a conversation:
 

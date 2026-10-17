@@ -3482,9 +3482,7 @@ struct App::Game {
     std::string hexid, conversation, asker, opponent;
     int player = 0;
     bool playing = false;
-    int move = 0, their_move = 0;
-    std::unique_ptr<sg::net::Prediction> prediction;
-    std::int64_t last_epoch = 0;
+    std::unique_ptr<CourtSide> side;  // the hand and the picture
     std::vector<Bytes> out;  // the network's boundary packets, to the other
     std::string game, net;
     std::uint64_t sent = 0, received = 0;  // packets, for looking
@@ -3504,7 +3502,7 @@ std::string App::start_game(const std::string& id) {
     g->asker = peer_;
     g->player = 0;
     const auto hexid = g->hexid;
-    post_kind(c, "game", game_body(g->id, 0));
+    post_kind(c, "game", game_body(g->id, 3));
     games_[hexid] = std::move(g);
     return hexid;
 }
@@ -3554,11 +3552,8 @@ void App::open_game(Game& g) {
     const auto config = sg::Params{}.set("player", std::int64_t(g.player));
     engine_->send(g.game, {g.game + ".configure", config});
     engine_->send(g.net, {g.net + ".configure", config});
-    engine_->send(g.game, {g.game + ".publish", {}});
     settle();
-    g.prediction = std::make_unique<sg::net::Prediction>(court_forecast(graph_.state(g.game)), court_lead, 128,
-                                                         std::vector<std::uint8_t>{1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0});
-    g.prediction->reset(0, court_frame(graph_.state(g.game)));
+    g.side = std::make_unique<CourtSide>(graph_.state(g.game), g.player);
     if (live_) live_->connect(g.opponent);
     notices_.push_back({"game_on", g.conversation, g.opponent, g.hexid});
 }
@@ -3571,7 +3566,11 @@ void App::game_message(Conversation& c, const sg::net::Observation& o, const Byt
     r.end();
     const auto hexid = hex(Bytes(id.begin(), id.end()));
     auto it = games_.find(hexid);
-    if (what == 0) {
+    // Asked: 3, a court whose paddles go where their players put them
+    // (protocol 12). An ask of before (0, by up and down) is not taken: the
+    // two courts would not be the same court.
+    if (what == 0) return;
+    if (what == 3) {
         if (it != games_.end() || o.peer == peer_) return;
         auto g = std::make_unique<Game>();
         g->id = id;
@@ -3600,9 +3599,7 @@ void App::game_message(Conversation& c, const sg::net::Observation& o, const Byt
 void App::game_input(const std::string& id, int move) {
     const auto it = games_.find(id);
     if (it == games_.end() || !it->second->playing) return;
-    auto& g = *it->second;
-    g.move = move > 0 ? 1 : move < 0 ? -1 : 0;
-    engine_->send(g.game, {g.game + ".input", sg::Params{}.set("move", double(g.move))});
+    if (it->second->side) it->second->side->steer(move);
 }
 
 // A packet from the other player: the network's own receive arrow takes it.
@@ -3637,29 +3634,20 @@ void App::pump_games() {
         last_frame_ += 16;
         ++frames;
         ++frames_;
+        // Each side's hand moves a frame; a step it has played past is said
+        // (where its paddle is at the step's end) and published.
+        for (auto& [id, g] : games_) {
+            if (!g->playing || !g->side || !graph_.contains(g->game)) continue;
+            if (const auto y = g->side->before(graph_.state(g->game))) {
+                engine_->send(g->game, {g->game + ".publish", sg::Params{}.set("y", *y)});
+            }
+        }
         engine_->tick(court_step);
         frame_time_ += court_step;
         for (auto& [cid, b] : boards_)
             for (auto& [peer, p] : b->pens) p.prediction->advance({});
-        for (auto& [id, g] : games_) {
-            if (!g->playing || !graph_.contains(g->game)) continue;
-            const auto& court = graph_.state(g->game);
-            const auto epoch = court.params().get_or<std::int64_t>("epoch", 0);
-            if (epoch != g->last_epoch) {
-                // Agreed: the step before's last packets stay a while yet - the
-                // other may not have seen it agreed (they are said again only
-                // until the next step's own replace them).
-                g->prediction->reconcile(std::uint64_t(epoch) * std::uint64_t(court.params().get_or<std::int64_t>("steps", 6)), court_frame(court), frame_time_);
-                g->last_epoch = epoch;
-                // What the other did, as agreed: the forecast's guess at its control.
-                const auto& mine = court.element(sg::Key("p" + std::to_string(g->player))).params;
-                g->their_move = int(mine.num(sg::Key("command_" + std::to_string(1 - g->player)), 0));
-            }
-            sg::net::DiscreteInputs in{0, 0};
-            in[std::size_t(g->player)] = g->move;
-            in[std::size_t(1 - g->player)] = g->their_move;
-            g->prediction->advance(in);
-        }
+        for (auto& [id, g] : games_)
+            if (g->playing && g->side && graph_.contains(g->game)) g->side->after(graph_.state(g->game), frame_time_);
     }
     if (now_ > last_frame_ + 200) last_frame_ = now_;  // far behind (a tab asleep): not caught up frame by frame
     if (!live_) return;
@@ -3698,12 +3686,11 @@ std::vector<App::GameView> App::games() const {
             v.left_score = court.params().get_or<std::int64_t>("left_score", 0);
             v.right_score = court.params().get_or<std::int64_t>("right_score", 0);
             v.hits = court.params().get_or<std::int64_t>("hits", 0);
-            const auto shown = g->prediction ? g->prediction->display(frame_time_) : court_frame(court);
+            const auto shown = g->side ? g->side->picture().display(frame_time_) : court_frame(court);
             v.ball_x = shown[0], v.ball_y = shown[1], v.left_y = shown[4], v.right_y = shown[6];
-            // This player's own paddle as it is now, with every move made so
-            // far - never smoothed behind the hand that moves it.
-            if (g->prediction) (g->player == 0 ? v.left_y : v.right_y) = g->prediction->predicted()[g->player == 0 ? 4 : 6];
-            if (g->prediction) v.lead = g->prediction->predicted_tick() - g->prediction->finalized_tick();
+            // This player's own paddle where the hand has put it - never behind it.
+            if (g->side) (g->player == 0 ? v.left_y : v.right_y) = g->side->hand();
+            if (g->side) v.lead = g->side->picture().predicted_tick() - g->side->picture().finalized_tick();
             v.sent = g->sent;
             v.received = g->received;
         }
