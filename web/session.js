@@ -12,7 +12,7 @@ import { Calls } from './call.js';
 import './release.js';  // the release chain's checks (globalThis.pchatRelease)
 import { Media } from './media.js';
 import { Carry } from './carry.js';
-import { PairLink, FRAME, inPersonLink, readInPerson, answerCode, readAnswer, base64url } from './direct.js';
+import { PairLink, FRAME, inPersonLink, readInPerson, answerCode, readAnswer, base64url, relinkLink, readRelink } from './direct.js';
 
 const TTL_MS = 14 * 86400e3;
 const ACK_WAIT_MS = 30e3;
@@ -37,6 +37,9 @@ const CARRY_AGAIN_MS = 5000, CARRY_KEEP_MS = 120e3;
 // The link two phones made to pair in person: closed once their own link is
 // up (a while after), or after this long.
 const PAIR_LINK_MS = 10 * 60e3;
+// A contact that relays says a device of a chat is linked to it now: the
+// link with that device is made again through it, at most this often.
+const NEAR_AGAIN_MS = 30e3;
 
 const OP = { put: 1, fetch: 2, del: 3, watch: 4, pairPost: 16, pairFetch: 17, pairReusable: 18, pairCancel: 19, pairDone: 20,
   join: 32, signal: 33, leave: 34, pushForward: 49 };
@@ -232,6 +235,9 @@ export class Session {
       handle: (env) => this.chat.blake2b(16, new Uint8Array(0), env),
       helping: () => this.helping(),
       keep: { list: () => store.held(), put: (h) => store.saveHeld(h.key, h), drop: (key) => store.dropHeld(key) },
+      relaying: () => this.relaying(),
+      served: { list: () => store.served(), put: (x) => store.saveServed(x.key, x), drop: (key) => store.dropServed(key) },
+      near: (peer, rooms) => this.near(peer, rooms),
       now: () => Date.now(),
     });
     try { this.config = await (await fetch('config.json')).json(); } catch { /* none: no STUN/TURN */ }
@@ -265,8 +271,11 @@ export class Session {
     every('release', 60000, () => this.announceRelease());
     every('release-files', 1500, () => this.askReleaseAgain());
     setTimeout(() => this.announceRelease().catch(() => {}), 3000);
-    document.addEventListener?.('visibilitychange', () => (document.visibilityState === 'visible' ? this.back() : (this.hidden = Date.now())));
+    document.addEventListener?.('visibilitychange', () => {
+      if (document.visibilityState === 'visible') { this.back(); this.stayAwake(); } else this.hidden = Date.now();
+    });
     addEventListener?.('online', () => this.back(true));
+    this.stayAwake();
     return true;
   }
   // Back: shown again, woken, or on a network again. What may have gone
@@ -328,6 +337,62 @@ export class Session {
   // its contacts only directly and through contacts that carry for them.
   relayOn() { return !this.profile?.relayOff; }
   helping() { return !this.profile?.carryOff; }
+  // Whether this device relays for its contacts (Settings): one left open -
+  // a computer on a desk - that carries for them more than any phone, says
+  // so, and keeps its screen awake while it is shown. It carries, so a
+  // device that does not carry does not relay.
+  relaying() { return !!this.profile?.relaying && this.helping(); }
+  async setRelaying(on) {
+    this.profile = { ...(await store.profile()), relaying: !!on, ...(on ? { carryOff: false } : {}) };
+    await store.setProfile(this.profile);
+    this.stayAwake();
+  }
+  // A page cannot keep a device awake in the background; shown, it can
+  // keep the screen on (where the browser lets it).
+  async stayAwake() {
+    try {
+      if (!this.relaying()) { await this.awake?.release(); this.awake = null; return; }
+      if (document.visibilityState === 'visible' && (!this.awake || this.awake.released))
+        this.awake = await navigator.wakeLock?.request('screen');
+    } catch { /* not allowed here: the page relays while it is open, as ever */ }
+  }
+  // A contact that relays has devices of these rooms linked to it now: a
+  // device of those chats this one is not linked with is looked for again,
+  // through it.
+  near(peer, rooms) {
+    if (!this.app) return;
+    const want = new Set(rooms), now = Date.now();
+    for (const id of this.app.conversations()) {
+      if (!this.app.roomsOf(id).some((r) => want.has(c.hex(r.room)))) continue;
+      for (const m of this.app.info(id).members) {
+        if (m.self || m.peer === peer || this.app.liveWith(m.peer) || now - (this.relinked.get(m.peer) || 0) < NEAR_AGAIN_MS) continue;
+        this.relinked.set(m.peer, now);
+        this.app.reconnectLive(m.peer);
+      }
+    }
+  }
+  // With no relay, a message for a device that is away can still arrive if
+  // a contact that relays keeps mail for every other device of the chat:
+  // it is kept there, and given when that device asks.
+  keptByRelaying(conv) {
+    const info = this.app.info(conv);
+    const others = info.members.filter((m) => !m.self);
+    if (!others.length || !others.every((m) => this.app.liveWith(m.peer) || this.app.takesMail(conv, m.peer))) return false;
+    const own = new Set(this.app.roomsOf(conv).map((r) => c.hex(r.label)));
+    return this.app.roomsOf(conv).some((r) => [...this.carrier.servedIn(c.hex(r.room))].filter((l) => !own.has(l)).length >= others.length);
+  }
+  // The name this device gives the contact whose device relays for a chat.
+  relayingName(conv) {
+    for (const p of this.carrier.relays()) {
+      const roomsHere = new Set(this.app.roomsOf(conv).map((r) => c.hex(r.room)));
+      if (!(this.carrier.serving.get(p) || []).some((d) => roomsHere.has(c.hex(d.room)))) continue;
+      const info = this.app.info(conv), m = info.members.find((x) => x.peer === p);
+      if (m && m.side === info.side) return 'your other device';
+      const id = this.app.conversations().find((x) => this.app.info(x).kind === 0 && this.app.info(x).members.some((y) => y.peer === p));
+      if (id) return (this.app.info(id).name || 'a contact') + '\'s device';
+    }
+    return 'a contact\'s device';
+  }
   async setRelay(on) {
     this.profile = { ...(await store.profile()), relayOff: !on };
     await store.setProfile(this.profile);
@@ -391,7 +456,7 @@ export class Session {
     if (this.relayOf(conv)) return true;
     const info = this.app.info(conv);
     const others = info.members.filter((m) => !m.self);
-    return others.length > 0 && others.every((m) => this.app.liveWith(m.peer));
+    return (others.length > 0 && others.every((m) => this.app.liveWith(m.peer))) || this.keptByRelaying(conv);
   }
   // How the other devices are reached now, in a word: linked (directly), the
   // relay, or not at all.
@@ -399,7 +464,8 @@ export class Session {
     const info = this.app.info(conv);
     const others = info.members.filter((m) => !m.self);
     if (others.length && others.every((m) => this.app.liveWith(m.peer))) return 'linked';
-    return this.relayOf(conv)?.up ? 'relay' : 'none';
+    if (this.relayOf(conv)?.up) return 'relay';
+    return !this.relayOf(conv) && this.keptByRelaying(conv) ? 'carried' : 'none';
   }
   watchReach() {
     this.reach ??= new Map();
@@ -469,7 +535,7 @@ export class Session {
             s.carried = now;
             this.carrier.signal(s);
             const p = this.pairing;
-            if (p?.link.up && p.conv === s.conversation) p.link.send(FRAME.signal, cat(s.room, s.box));
+            if (p?.link.up && (p.conv === s.conversation || p.role === 'relink')) p.link.send(FRAME.signal, cat(s.room, s.box));
           }
           if (!taken && now < s.until) keep.push(s);
         });
@@ -707,8 +773,9 @@ export class Session {
         if (o.purpose !== 'message') return;
         // No relay: kept here, and given to the contacts linked now to keep
         // for it (sent live the moment there is a link, as ever).
+        const relays = this.carrier.relays().some((p) => p !== o.peer);
         const held = this.carrier.hold(env, o.peer);
-        await store.saveOutbox(id, { ...item, waiting: true, held: held ? Date.now() : 0 });
+        await store.saveOutbox(id, { ...item, waiting: true, held: held ? Date.now() : 0, heldRelay: held && relays ? Date.now() : 0 });
         await this.status(o, held ? 'mailbox' : 'queued');
         return;
       }
@@ -819,8 +886,16 @@ export class Session {
       // No relay: given to contacts to keep as soon as one is linked.
       if (o.waiting && o.mailbox && !o.held && o.conv && !this.relayOf(o.conv) && this.carrier.hold(o.env, o.peer)) {
         o.held = now;
+        if (this.carrier.relays().some((p) => p !== o.peer)) o.heldRelay = now;
         await store.saveOutbox(o.id, o);
         await this.status({ conversation: o.conv, sequence: o.seq }, 'mailbox');
+      }
+      // Kept only by contacts that do not relay: given too to one that does,
+      // once one is linked (it is the one left open).
+      if (o.waiting && o.mailbox && o.held && !o.heldRelay && o.conv && !this.relayOf(o.conv) &&
+          this.carrier.relays().some((p) => p !== o.peer) && this.carrier.hold(o.env, o.peer, true)) {
+        o.heldRelay = now;
+        await store.saveOutbox(o.id, o);
       }
       if (o.waiting && (!o.mailbox || !this.relayOf(o.conv)) && o.peer && now - (o.made || now) > 10000 && !this.app.liveWith(o.peer) &&
           now - (this.relinked.get(o.peer) || 0) > 15000 && this.canRelink(o.conv, o.peer)) {
@@ -1417,7 +1492,8 @@ export class Session {
   async theirCode(text) {
     const a = readAnswer(text.trim());
     const p = this.pairing;
-    if (!p || p.role !== 'owner' || c.hex(a.token) !== c.hex(p.token)) throw new Error('That code answers another invite. Show them this one again.');
+    if (!p || !(p.role === 'owner' || (p.role === 'relink' && p.owner)) || c.hex(a.token) !== c.hex(p.token))
+      throw new Error('That code answers another invite. Show them this one again.');
     await p.link.accept(a.answer);
   }
   // The phone that was shown the code: what it says, read.
@@ -1436,10 +1512,46 @@ export class Session {
     link.onopen = () => this.pair(d.fragment, d.code, name, call, mail).catch((e) => this.ui.warn(e.message));
     return answerCode(d.token, answer);
   }
+  // Linking again in person (protocol 11): this device and one it is paired
+  // with lost every link (reloaded, no relay). One shows a code, the other
+  // shows one back; over the link the two make go their conversations'
+  // signals - each sealed and signed by its sender, believed for nothing
+  // else - until their own links are up.
+  async relinkOffer() {
+    if (!this.app) throw new Error('Pair with someone first.');
+    this.endPairing();
+    const link = new PairLink(this.config.ice), token = c.random(16);
+    const offer = await link.offer();
+    this.watchPairing({ role: 'relink', token, link, owner: true });
+    return relinkLink(location.origin + location.pathname, token, offer);
+  }
+  async answerRelink(fragment) {
+    if (!this.app) throw new Error('This device has no chats to link again.');
+    const d = readRelink(fragment);
+    this.endPairing();
+    const link = new PairLink(this.config.ice);
+    const answer = await link.answer(d.offer);
+    this.watchPairing({ role: 'relink', token: d.token, link });
+    return answerCode(d.token, answer);
+  }
+  // Up: every signal kept goes over it, and every device not linked now is
+  // looked for again (its signals go over it too).
+  relinkUp() {
+    const p = this.pairing;
+    if (p?.role !== 'relink' || !p.link.up) return;
+    p.before ??= new Set(this.app.livePeers());
+    for (const s of this.signals) p.link.send(FRAME.signal, cat(s.room, s.box));
+    const now = Date.now();
+    for (const id of this.app.conversations())
+      for (const m of this.app.info(id).members)
+        if (!m.self && !this.app.liveWith(m.peer)) { this.relinked.set(m.peer, now); this.app.reconnectLive(m.peer); }
+    this.pump();
+  }
   watchPairing(p) {
     this.pairing = { ...p, made: Date.now() };
     p.link.onframe = (kind, body) => this.pairFrame(kind, body).catch((e) => console.error('pairing link', e));
     p.link.onclose = () => { if (this.pairing?.link === p.link) this.pairing.closed = true; };
+    if (p.role === 'relink') p.link.onopen = () => { this.relinkUp(); this.ui.changed(null); };
   }
   async pairFrame(kind, body) {
     const p = this.pairing;
@@ -1461,6 +1573,8 @@ export class Session {
     const now = Date.now();
     const peers = p.conv && this.conv.has(p.conv) ? this.info(p.conv).members.filter((m) => !m.self).map((m) => m.peer) : [];
     if (peers.length && peers.every((x) => this.app.liveWith(x))) p.linked ??= now;
+    // Linked again: once a device it was not linked with is (a while after).
+    if (p.role === 'relink' && !p.linked && p.before && this.app.livePeers().some((x) => !p.before.has(x))) { p.linked = now; this.ui.changed(null); }
     if ((p.linked && now - p.linked > 10e3) || now - p.made > PAIR_LINK_MS || p.closed) this.endPairing();
   }
   endPairing() {

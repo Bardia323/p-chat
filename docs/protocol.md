@@ -10,9 +10,12 @@ page and the code disagree, the vectors decide, and one of them is a bug.
 
 **Protocol 11** (this page) lets a connection watch its mailboxes at the
 relay (op 4) and be told at once that mail is waiting in one (pushed frame
-`0x41`): a device fetches when it is told, not at its next round. Nothing
-else changed (content version 10); a device still talks to a protocol 10
-relay, which refuses the op, and fetches each round as before.
+`0x41`): a device fetches when it is told, not at its next round; a device
+still talks to a protocol 10 relay, which refuses the op, and fetches each
+round as before. It also lets a device relay for its contacts, with no
+relay: `carry` frames 8 (`relays`) and 9 (`serves`), and a code to link
+again in person (`#l1.`) for two devices already paired that lost every
+link. Nothing a message carries changed (content version 10).
 **Protocol 10** makes the relay optional: an invite may name
 no relay (paired in person, over a link the two phones make from two codes
 they show each other), and contacts carry for each other on the live links
@@ -742,6 +745,64 @@ minute from one giver. One that does not carry (Settings) refuses 2, 4 and
 a relay sees - rooms, labels, mailbox ids, sealed boxes and their sizes -
 and, being a contact of both, that the two it carries between talk.
 
+**A device that relays (protocol 11).** A device its owner leaves open -
+a computer on a desk - may relay for its contacts (Settings, "This device
+relays"; it carries, so a device that does not carry does not relay). It
+does what every carrier does, with a relay's share of room (below), keeps
+what it holds across reloads (every carrier keeps it in IndexedDB), keeps
+the screen on while shown (where the browser allows a wake lock), and says
+so, on `carry`:
+
+    8 relays: u8 flags                                bit 0: this device relays; no other bit.
+                                                      Said once it relays (and once it stops), and each minute
+    9 serves: u16 n (<= 1024) | n x (room | label | u8 now)
+                                                      the devices it keeps mail for that share a
+                                                      room with you (not your own); now 1: linked here now
+
+A relaying device remembers, for 14 days, each (room, label) its linked
+contacts said in their `rooms` - where each device is reached, the same a
+relay's rooms are. To each linked contact it says, in `serves`, those that
+share a room with that contact; again when they change and each minute.
+`serves` is believed only from a contact that said it relays, and only
+for two things - where to keep, and whom to look for; nothing is opened by
+it:
+
+- *Sending.* With no relay for a chat, a message for a device that is away
+  is sent (not refused) when every other device of the chat is linked or
+  takes mail, and the linked contacts that relay, between them, serve as
+  many labels of one of the chat's rooms (not this device's own) as the chat
+  has other devices. It is given to every linked contact that relays (and
+  to others, up to three); kept only by others, it is given again to one
+  that relays once one is linked. The chat says it is reached "through
+  <the name this device gives that contact>'s device".
+- *Finding each other.* A device of one of this device's chats said `now`
+  is looked for again through it: the live link with that device is made
+  again (at most every 30 s), its signals passed on by the relaying device.
+
+A relaying device's contacts learn what a relay's room would tell them: that
+a device of their own chat comes by it, and when it is linked there. It
+learns nothing a carrier does not (rooms, labels, mailbox ids, sealed boxes).
+
+**Linking again in person (protocol 11).** A page cannot be reached: a
+device with no relay that was closed and opened again is linked with no one,
+and no one can link with it. Two devices already paired - a phone and the
+device that relays for it, say - link again from two codes, as when they
+paired in person, with no invite:
+
+    https://<site>/#l1.<base64url(u8 3 | token(16) | short(offer))>
+    p-chat:a1.<base64url(u8 2 | token(16) | short(answer))>      (the answer, as above)
+
+`token` is random, the answer naming it is the only one taken. Over the
+link, only frame 3 (`room | box`, a conversation's sealed signal) is taken:
+each device sends every signal it keeps and makes again the live link with
+every device it is not linked with, whose signals go over it too. Those of
+another chat than the two share are dropped unopened by the other. The link
+is closed ten seconds after a device not linked before is, or after ten
+minutes. Who scans learns the rooms of the other's chats and sealed signals
+- what a relay sees; nothing is believed for having come over it. Through
+the device it is linked with again (it carries, or relays), a device finds
+the rest.
+
 **Relays off** (Settings, a device's own choice): no connection to any
 relay. Invites are made in person only; a message for a device that takes
 mail waits on this phone and with linked contacts; pushes, which only a
@@ -947,6 +1008,9 @@ per mailbox and in all, bounds rooms and members, and logs nothing.
 | A link made again for a peer heard behind it | at most every 15 s |
 | Kept for others | 512 envelopes, 16 MiB, 128 a giver, 14 days |
 | Carried a minute, per giver | 120 signals, 60 envelopes, 30 asks |
+| Kept by a device that relays | 4096 envelopes, 256 MiB, 1024 a giver, 14 days; a minute, per giver: 600 signals, 300 envelopes |
+| A relaying device remembers where a contact is reached | 14 days (written again at most hourly) |
+| Looked for again, said `now` by a device that relays | at most every 30 s a device |
 
 ## Test vectors
 

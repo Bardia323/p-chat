@@ -34,8 +34,12 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => th
 const KIND = { contact: 1, extra: 2, reusable: 3, channel: 4, recovery: 5 };
 
 // The link's fragment is read once and taken out of the address bar.
-let invite = null, meeting = null;
-if (location.hash.startsWith('#d1.')) {
+let invite = null, meeting = null, relinking = null;
+if (location.hash.startsWith('#l1.')) {
+  // A code shown by a device already paired, to link again in person (protocol 11).
+  relinking = location.hash.slice(1);
+  history.replaceState(null, '', location.pathname + location.search);
+} else if (location.hash.startsWith('#d1.')) {
   // A code shown by a phone side by side (protocol 10): paired in person.
   meeting = location.hash.slice(1);
   history.replaceState(null, '', location.pathname + location.search);
@@ -89,7 +93,7 @@ function toast(text) {
   document.body.append(t);
   setTimeout(() => t.remove(), 4500);
 }
-const DEPTH = { meet: 1, contacts: 0, unsupported: 0, unrecognized: 0, pair: 1, chat: 1, invite: 1, about: 1, error: 1, newgroup: 1,
+const DEPTH = { meet: 1, relink: 3, contacts: 0, unsupported: 0, unrecognized: 0, pair: 1, chat: 1, invite: 1, about: 1, error: 1, newgroup: 1,
   paired: 2, devices: 2, settings: 2, replace: 3, call: 2, game: 2, board: 2 };
 let entering = null;
 
@@ -198,6 +202,7 @@ const ui = {
     if (state.screen === 'chat' && (!conv || conv === state.conv)) await renderChat(false);
     else if (state.screen === 'contacts') await renderContacts();
     else if (state.screen === 'devices' && conv === state.conv) renderDevices();
+    else if (state.screen === 'relink') renderRelinkStatus();
     else if (state.screen === 'invite' && state.invite?.kind !== KIND.contact && conv) renderInviteStatus();
     else if (state.screen === 'pair' && session.conversations().length) {
       const c = session.conversations()[0];
@@ -292,7 +297,7 @@ fitToView();
 // that goes to the screen before steps the history back too, so the two
 // never disagree. Pairing's screens replace each other (a finished pairing
 // is not gone back into), and a call is left only by hanging up.
-const PASSING = new Set(['pair', 'meet', 'paired', 'error', 'unrecognized', 'unsupported']);
+const PASSING = new Set(['pair', 'meet', 'relink', 'paired', 'error', 'unrecognized', 'unsupported']);
 const steps = [];  // what the browser's history holds of p-chat, as it holds it
 let fromHistory = false, expectPop = 0;
 function stepTo(name) {
@@ -348,7 +353,7 @@ function show(name, data = {}) {
   document.documentElement.classList.toggle('still', fitted);
   renderSide();
   const screens = { unsupported, unrecognized, pair: renderPair, contacts: renderContacts, chat: () => renderChat(true),
-    invite: renderInvite, meet: renderMeet, devices: renderDevices, paired: renderPaired, about: renderAbout, error: renderError, settings: renderSettings,
+    invite: renderInvite, meet: renderMeet, relink: renderRelink, devices: renderDevices, paired: renderPaired, about: renderAbout, error: renderError, settings: renderSettings,
     newgroup: renderNewGroup, replace: renderReplace, call: renderCall, game: renderGame, board: renderBoard };
   (screens[name] || renderContacts)();
 }
@@ -672,7 +677,8 @@ async function renderChat(first) {
     h('div', {}, h('h1', { 'data-test': 'chat-name', dir: 'auto' }, info.name), h('div', { class: 'sub' },
       info.kind === 2 ? (info.member ? 'Your channel' : 'Channel · read only')
         : info.kind === 1 ? info.members.length + ' devices · group' : info.members.length - 1 + (info.members.length === 2 ? ' device' : ' devices') + ' · sealed',
-      info.kind === 2 ? null : h('span', { class: 'reach', 'data-test': 'reach' }, ' · ' + { linked: 'linked', relay: 'through the relay', none: 'not reachable now' }[session.reachedBy(id)]))),
+      info.kind === 2 ? null : h('span', { class: 'reach', 'data-test': 'reach' }, ' · ' + { linked: 'linked', relay: 'through the relay', none: 'not reachable now',
+        carried: 'through ' + session.relayingName(id) }[session.reachedBy(id)]))),
     info.member && info.kind !== 2 && Calls.supported() && !info.removed ? callKey(id) : null,
     info.member && info.kind === 1 && Calls.supported() && !info.removed ? callKey(id, true) : null,
     h('button', { class: 'label', 'data-test': 'devices', onclick: () => show('devices') }, 'Devices'));
@@ -861,6 +867,87 @@ function renderInPerson(inv) {
       h('button', { class: 'btn light', 'data-test': 'use-answer', onclick: () => take(pasted.value) }, 'Use this code')))));
 }
 
+// Linking again in person (protocol 11): with no relay, a device that lost
+// every link (closed and opened again) is found by none. One scan with a
+// contact - or with the device that relays for you - links the two again,
+// and through it the rest. This side shows its code and scans the answer;
+// the other (state.relink, the code it was shown) shows its answer back.
+async function renderRelink() {
+  if (state.relinkDone) {
+    // Done: the code was used once, and is not shown again.
+    draw(head('Link again', { small: true, back: () => show('contacts') }), h('main', {},
+      h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Linked again'), h('p', { class: 'caps light' }, 'The rest come back through it')),
+      h('div', { class: 'pad' }, h('p', { class: 'fine', 'data-test': 'relink-status' }, 'Linked again.'),
+        h('button', { class: 'btn wide', 'data-test': 'relink-done', onclick: () => show('contacts') }, 'Done'))));
+    return;
+  }
+  if (state.relink) {
+    if (!state.relinkCode) {
+      const go = h('button', { class: 'btn wide', 'data-test': 'relink-answer', onclick: async () => {
+        go.disabled = true;
+        try { state.relinkCode = await session.answerRelink(state.relink); renderRelink(); } catch (e) { go.disabled = false; toast(e.message); }
+      } }, 'Show my code');
+      draw(head('Link again', { small: true, back: () => show('contacts') }), h('main', {},
+        h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Link again in person'), h('p', { class: 'caps light' }, 'With a device you are already paired with')),
+        h('div', { class: 'pad' }, h('p', { class: 'fine' }, 'Your phones join directly. Only locked signals go between them, to find each other again; nothing is paired anew.'), go)));
+      return;
+    }
+    const qr = qrcode(0, 'L');
+    qr.addData(state.relinkCode);
+    qr.make();
+    draw(head('Link again', { small: true, back: () => { session.endPairing(); show('contacts'); } }), h('main', {},
+      h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Show them this code'), h('p', { class: 'caps light' }, 'Their device scans it')),
+      h('div', { class: 'pad' }, h('img', { class: 'qr', alt: 'Your answer as a code', src: qr.createDataURL(8, 0), 'data-test': 'relink-qr', 'data-code': state.relinkCode }),
+        h('div', { class: 'row' }, h('button', { class: 'btn light', 'data-test': 'copy-relink', onclick: async () => {
+          await navigator.clipboard?.writeText(state.relinkCode).catch(() => {});
+          toast('Copied. Send it to them: they paste it where they would scan it.');
+        } }, 'Copy code')),
+        h('p', { class: 'fine', 'data-test': 'relink-status' }, relinkSaid()))));
+    return;
+  }
+  if (!state.relinkLink) {
+    // One code at a time, however often the screen is drawn meanwhile; an
+    // old one is not left on screen while the new one is made.
+    draw(head('Link again', { small: true, back: () => { session.endPairing(); show('settings'); } }), h('main', {},
+      h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Making your code'), h('p', { class: 'caps light' }, 'A few seconds')),
+      h('div', { class: 'pad' }, h('p', { class: 'fine', 'data-test': 'relink-status' }, 'Finding how this device can be reached…'))));
+    state.relinkMaking ??= session.relinkOffer().then((l) => { state.relinkLink = l; }).finally(() => { state.relinkMaking = null; });
+    try { await state.relinkMaking; } catch (e) { toast(e.message); return show('settings'); }
+    if (state.screen !== 'relink' || state.relink) return;
+  }
+  const qr = qrcode(0, 'L');
+  qr.addData(state.relinkLink);
+  qr.make();
+  const take = async (text) => {
+    try { await session.theirCode(text); renderRelinkStatus('Joining…'); } catch (e) { toast(e.message); }
+  };
+  const pasted = h('input', { autocomplete: 'off', spellcheck: 'false', autocapitalize: 'none', placeholder: 'p-chat:a1.…', 'data-test': 'relink-text' });
+  draw(head('Link again', { small: true, back: () => { session.endPairing(); state.relinkLink = null; show('settings'); } }), h('main', {},
+    h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Let them scan this'), h('p', { class: 'caps light' }, 'A device you are paired with')),
+    h('div', { class: 'pad' }, h('img', { class: 'qr', alt: 'Your code to link again', src: qr.createDataURL(8, 0), 'data-test': 'relink-link', 'data-link': state.relinkLink }),
+      h('div', { class: 'row' }, h('button', { class: 'btn light', 'data-test': 'copy-relink-link', onclick: async () => {
+        await navigator.clipboard?.writeText(state.relinkLink).catch(() => {});
+        toast('Link copied. Send it only to them.');
+      } }, 'Copy link')),
+      h('p', { class: 'fine', 'data-test': 'relink-status' }, relinkSaid()),
+      h('button', { class: 'btn wide', 'data-test': 'relink-scan', onclick: () => scanQR('Scan the code on their device', take) }, 'Scan their code'),
+      h('label', { class: 'field' }, h('span', {}, 'Or paste their code'), pasted),
+      h('button', { class: 'btn light', 'data-test': 'relink-use', onclick: () => take(pasted.value) }, 'Use this code'))));
+}
+function relinkSaid() {
+  const p = session.pairing;
+  if (p?.role !== 'relink') return 'Closed. Make a new code to try again.';
+  if (p.linked) return 'Linked again.';
+  if (p.link.up) return 'Joined. Finding your chats…';
+  return state.relink ? 'Waiting for them to scan it…' : 'When their device shows a code, scan it.';
+}
+function renderRelinkStatus(text) {
+  const p = session.pairing;
+  if (!state.relinkDone && p?.role === 'relink' && p.linked) { state.relinkDone = true; return renderRelink(); }
+  const s = root.querySelector('[data-test=relink-status]');
+  if (s) s.textContent = text || relinkSaid();
+}
+
 // The phone shown a code in person: its names, then a code of its own back.
 function renderMeet() {
   let d;
@@ -919,6 +1006,7 @@ async function scanned() {
     const frag = at >= 0 ? text.slice(at + 1) : '';
     state.pairing = null;
     if (frag.startsWith('d1.')) return show('meet', { meet: frag, meetCode: null, meetAsked: false });
+    if (frag.startsWith('l1.')) return show('relink', { relink: frag, relinkCode: null, relinkDone: false });
     if (frag.startsWith('v1.')) { invite = frag; return show('pair'); }
     toast('That is not a p-chat code.');
   });
@@ -1380,7 +1468,7 @@ async function renderSettings() {
   const looks = h('div', { class: 'theme', role: 'group', 'aria-label': 'Look' }, ['auto', 'light', 'dark'].map((t) =>
     h('button', { class: 'btn light', 'aria-pressed': String(now === t), 'data-test': 'theme-' + t, onclick: () => { theme(t); renderSettings(); } },
       t === 'auto' ? 'Auto' : t === 'light' ? 'Light' : 'Dark')));
-  const relayOn = session.relayOn(), helping = session.helping();
+  const relayOn = session.relayOn(), helping = session.helping(), relaying = session.relaying();
   const pair = (test, on, set) => h('div', { class: 'theme', role: 'group' },
     h('button', { class: 'btn light', 'aria-pressed': String(on), 'data-test': test + '-on', onclick: async () => { await set(true); renderSettings(); } }, 'On'),
     h('button', { class: 'btn light', 'aria-pressed': String(!on), 'data-test': test + '-off', onclick: async () => { await set(false); renderSettings(); } }, 'Off'));
@@ -1394,7 +1482,14 @@ async function renderSettings() {
       h('p', { class: 'caps' }, 'Carry for contacts'), pair('carry', helping, (on) => session.setHelping(on)),
       h('p', { class: 'fine' }, helping
         ? 'On. While linked, this phone passes locked signals between your contacts and keeps locked messages for them while they are away. It cannot read them - but it does see which of your contacts talk to each other.'
-        : 'Off. This phone carries nothing for others. It still takes what is for it.')),
+        : 'Off. This phone carries nothing for others. It still takes what is for it.'),
+      h('p', { class: 'caps' }, 'This device relays'), pair('relays', relaying, (on) => session.setRelaying(on)),
+      h('p', { class: 'fine', 'data-test': 'relays-state' }, relaying
+        ? 'On. Leave it open and plugged in - a computer on a desk is best. Your contacts give it their locked messages first, and it keeps them for 14 days, even if it is closed and opened again. It helps your contacts find each other. It cannot read anything.'
+        : 'Off. Turn it on for a device you leave open: it then does a relay\'s work for your contacts, with no relay.'),
+      h('div', { class: 'row' }, h('button', { class: 'btn light', 'data-test': 'relink', onclick: () => show('relink', { relink: null, relinkCode: null, relinkLink: null, relinkDone: false }) },
+        'Link again in person')),
+      h('p', { class: 'fine' }, 'Lost every link, with no relay? Scan a code with a contact, or with your device that relays: the rest come back through it.')),
     h('div', { class: 'pad' },
       notifications(p),
       h('details', { class: 'more', 'data-test': 'advanced' }, h('summary', {}, 'Advanced'),
@@ -1487,6 +1582,7 @@ async function start() {
   const booted = await session.boot();
   if (!booted || state.screen === 'unsupported' || state.screen === 'unrecognized') return;
   if (meeting) return show('meet', { meet: meeting, meetCode: null, meetAsked: false });
+  if (relinking) return show('relink', { relink: relinking, relinkCode: null, relinkDone: false });
   if (invite) return show('pair');
   const a = await store.asking();
   if (a) { state.pairing = 'asked'; invite = invite || null; }
@@ -1496,11 +1592,12 @@ async function start() {
 // only after its '#'): taken as at start.
 addEventListener('hashchange', () => {
   const h = location.hash.slice(1);
-  if (!h.startsWith('d1.') && !h.startsWith('v1.')) return;
+  if (!h.startsWith('d1.') && !h.startsWith('v1.') && !h.startsWith('l1.')) return;
   history.replaceState(null, '', location.pathname + location.search);
   if (!session.chat) return;
   state.pairing = null;
   if (h.startsWith('d1.')) show('meet', { meet: h, meetCode: null, meetAsked: false });
+  else if (h.startsWith('l1.')) show('relink', { relink: h, relinkCode: null, relinkDone: false });
   else { invite = h; show('pair'); }
 });
 start().catch((e) => { draw(h('main', {}, h('div', { class: 'pad' }, h('p', { class: 'caps' }, 'p-chat could not start'), h('p', {}, e.message)))); });

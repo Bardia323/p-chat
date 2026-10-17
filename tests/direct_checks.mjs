@@ -1,4 +1,4 @@
-// Protocol 10, in Node: the in-person codes (web/direct.js) and contacts
+// Protocols 10 and 11, in Node: the in-person codes (web/direct.js) and contacts
 // carrying for each other (web/carry.js) - every frame read back as made,
 // what is refused, and a carrier's rules, with its links and store faked.
 //
@@ -72,6 +72,13 @@ const answer = d.answerCode(got.token, good);
 const back = d.readAnswer(answer);
 ok(same(back.token, got.token) && same(back.answer, good), 'the answer code: token and answer read back');
 ok(refused(() => d.readAnswer('https://chat.example/#d1.AAAA')), 'a code that is not an answer is refused');
+const token = rnd16();
+const relink = d.relinkLink('https://chat.example/', token, good);
+const rl = d.readRelink(relink.split('#')[1]);
+ok(same(rl.token, token) && same(rl.offer, good) && relink.length < 260, 'the code to link again in person: token and offer read back (' + relink.length + ' characters)');
+ok(refused(() => d.readRelink('d1.' + relink.split('#l1.')[1])) && refused(() => d.readRelink(relink.split('#')[1] + 'A')) &&
+  refused(() => d.readInPerson('d1.' + relink.split('#l1.')[1])), 'it is not taken for another code, nor one changed');
+function rnd16() { return Uint8Array.from({ length: 16 }, (_, i) => i * 13 + 1); }
 ok(refused(() => d.unbase64url('AB=C')) && refused(() => d.unbase64url('AB')) && same(d.unbase64url('AA'), [0]), 'base64url: canonical only');
 
 // ---- carrying ----
@@ -178,10 +185,72 @@ const m = (f) => k.read(f);
 ok(m(k.frames.rooms([roomXY])).rooms.length === 1 && m(k.frames.pass(roomXY.room, roomXY.label, rnd(9, 1))).box.length === 9 &&
   m(k.frames.ask([mailboxY])).mailboxes.length === 1 && m(k.frames.taken(mailboxY, [rnd(16, 1)])).handles.length === 1,
   'every frame reads back as made');
-ok(!m(new Uint8Array([9, 0])) && !m(k.frames.rooms([roomXY]).slice(0, -1)) && !m(k.frames.pass(roomXY.room, roomXY.label, new Uint8Array(0))) &&
+ok(!m(new Uint8Array([10, 0])) && !m(k.frames.rooms([roomXY]).slice(0, -1)) && !m(k.frames.pass(roomXY.room, roomXY.label, new Uint8Array(0))) &&
   !m(k.frames.signal(roomXY.room, new Uint8Array(k.LIMITS.box + 1))), 'a frame of no known kind, cut short, empty or too large is refused');
 const g = k.frames.given(rnd(32, 1), rnd(16, 1), e1);
 ok(!m(g), 'a kept envelope given under another mailbox than its own is refused');
+
+// ---- a device that relays (protocol 11) ----
+{
+  const net = { links: new Set(), queue: [], phones: {}, rooms: {}, boxes: {}, selfish: new Set() };
+  const link2 = (a, b) => { net.links.add(a + '|' + b); net.links.add(b + '|' + a); };
+  const cut = (a, b) => { net.links.delete(a + '|' + b); net.links.delete(b + '|' + a); };
+  const flush = async () => { const out = []; while (net.queue.length) { const [to, from, f] = net.queue.shift(); out.push(await net.phones[to].frame(from, f)); } return out; };
+  const served = new Map(), near = [];
+  let relaying = true;
+  // R relays (its memory of where contacts are reached in `served`); A, B and O are phones.
+  const mk = (name, extra = {}) => {
+    const p = phone(name, net);
+    Object.assign(p.carry.io, extra);
+    return p;
+  };
+  const R = mk('r', { relaying: () => relaying, served: { list: async () => [...served.values()], put: async (x) => served.set(x.key, x), drop: async (key) => served.delete(key) } });
+  const A = mk('a', { near: (peer, rooms) => near.push([peer, rooms]) }), B = mk('b'), O = mk('o');
+  const ab = rnd(32, 61), labelA = rnd(32, 62), labelB = rnd(32, 63), ro = rnd(32, 64);
+  net.rooms.a = [{ room: ab, label: labelA }];
+  net.rooms.b = [{ room: ab, label: labelB }];
+  net.rooms.o = [{ room: ro, label: rnd(32, 65) }];
+  link2('r', 'a'); link2('r', 'b'); link2('r', 'o'); link2('a', 'o');
+  const round = async () => { for (const p of ['r', 'a', 'b', 'o']) await net.phones[p].tick(); await flush(); };
+  await round();
+  await round();
+  ok(same(A.carry.relays(), ['r']) && !O.carry.relaying.get('a'), 'a device that relays says so; a phone that does not says nothing');
+  ok(served.size === 3, 'it remembers where each contact\'s device is reached');
+  const toA = A.carry.serving.get('r');
+  ok(toA?.length === 1 && same(toA[0].label, labelB) && toA[0].now, 'to a contact it says the devices of that contact\'s own chats it keeps mail for, and that one is linked now');
+  ok(!(O.carry.serving.get('r') || []).length, 'and nothing of chats the contact is not in');
+  ok(near.some(([p, rooms]) => p === 'r' && rooms.includes(Array.from(ab, (x) => x.toString(16).padStart(2, '0')).join(''))),
+    'a contact is told a device of its chat is near, to find it again through the relaying device');
+  ok(A.carry.servedIn(Array.from(ab, (x) => x.toString(16).padStart(2, '0')).join('')).size === 1, 'so a message for it can be kept there');
+  // B away: it is still served (remembered), no longer near.
+  cut('r', 'b');
+  clock += 61e3;
+  await round();
+  const later = A.carry.serving.get('r');
+  ok(later?.length === 1 && !later[0].now, 'away, a device is still kept for, and no longer said to be near');
+  // Holding: relaying contacts first, whatever their number.
+  const eR = env(700); eR.set(rnd(32, 66), 1);
+  ok(A.carry.hold(eR, 'b') === 2 && (await flush()).filter((x) => x === 'held').length === 2 && R.kept.size === 1, 'an envelope goes to the device that relays (and others)');
+  const eR2 = env(701);
+  ok(A.carry.hold(eR2, 'b', true) === 1 && (await flush())[0] === 'held' && R.kept.size === 2 && O.kept.size === 1, 'given again: to the device that relays only');
+  // It takes a relay's share, not a phone's.
+  let kept = 0;
+  for (let i = 0; i < 200; i++) { if (i % 250 === 0) clock += 61e3; const e = env(800 + i); e.set(rnd(32, 90 + i), 1); if ((await R.carry.frame('o', k.frames.hold(e))) === 'held') kept++; }
+  ok(kept === 200, 'a device that relays keeps more than a phone would from one giver (' + kept + ')');
+  // A serves frame from a contact that never said it relays is not believed.
+  ok(await O.carry.frame('a', k.frames.serves([{ room: ab, label: labelB, now: true }])) === 'refused', 'what one that does not relay says it serves is refused');
+  // Turned off: it says so, and forgets what it remembered of others.
+  relaying = false;
+  await round();
+  ok(!A.carry.relays().length && served.size === 0 && R.carry.served === null, 'turned off, it says so and forgets where its contacts were reached');
+  // Frames.
+  const sv = k.frames.serves([{ room: ab, label: labelB, now: true }, { room: ro, label: labelA, now: false }]);
+  const back = k.read(sv);
+  ok(back.devices.length === 2 && back.devices[0].now && !back.devices[1].now && same(back.devices[1].label, labelA) && k.read(k.frames.relays(1)).flags === 1,
+    'relays and serves read back as made');
+  const bad = sv.slice(); bad[2 + 64 + 1] = 2;
+  ok(!k.read(bad) && !k.read(new Uint8Array([8, 2])) && !k.read(new Uint8Array([8, 1, 0])) && !k.read(sv.slice(0, -1)), 'a flag or a now of no meaning, or a frame cut short, is refused');
+}
 
 if (fails.length) { console.log(`sgchat_direct: ${fails.length} failed`); process.exit(1); }
 console.log('sgchat_direct: ok');
