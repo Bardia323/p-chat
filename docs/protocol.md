@@ -1,4 +1,4 @@
-# The sgchat protocol, 10
+# The sgchat protocol, 11
 
 What travels between two devices running p-chat, and what the relay sees. Every layout
 here is what `src/chat/` makes; `tests/vectors/v4.json` holds the bytes for
@@ -8,7 +8,12 @@ page and the code disagree, the vectors decide, and one of them is a bug.
 
 ## Versions
 
-**Protocol 10** (this page) makes the relay optional: an invite may name
+**Protocol 11** (this page) lets a connection watch its mailboxes at the
+relay (op 4) and be told at once that mail is waiting in one (pushed frame
+`0x41`): a device fetches when it is told, not at its next round. Nothing
+else changed (content version 10); a device still talks to a protocol 10
+relay, which refuses the op, and fetches each round as before.
+**Protocol 10** makes the relay optional: an invite may name
 no relay (paired in person, over a link the two phones make from two codes
 they show each other), and contacts carry for each other on the live links
 they have (the `carry` channel: rooms, signals passed on, envelopes kept);
@@ -882,6 +887,7 @@ Binary WebSocket frames only:
 | 1 | put | envelope | - |
 | 2 | fetch | u16 n, n x mailbox | u16 n, n x (mailbox, handle(16), long(envelope)) |
 | 3 | delete | mailbox, u16 n, n x handle | - |
+| 4 | watch (protocol 11) | u16 n (<= 1024), n x mailbox | - (4 past the relay's bound on all watches) |
 | 16 | pair post | token(16), box (1 KiB bucket) | - (2 if burned) |
 | 17 | pair fetch | token | u16 n, n x long(box) |
 | 18 | pair reusable | token, H(cancel key) | - |
@@ -894,7 +900,19 @@ Binary WebSocket frames only:
 | 49 | push forward | long(endpoint, 1024) \| long(authorization, 1024) \| long(sealed push, 4096) | - |
 
 The relay pushes `u8 1 | u8 0x40 | u32 0 | room | long(box)` to the addressed member
-of a room. `handle = H(envelope)` truncated to 16 bytes (equal envelopes
+of a room.
+
+**Watching** (protocol 11): a connection names the mailboxes it fetches -
+the same ids a fetch names, so the relay learns nothing a fetch does not
+show it - and each list replaces the last (an empty one ends watching).
+When a put stores a new envelope in a watched mailbox, the relay pushes
+`u8 1 | u8 0x41 | u32 0 | mailbox` to each connection watching it: no
+envelope, no sender, only which mailbox. It is a hint, best effort (a
+connection's full queue drops it): the device fetches that mailbox at once,
+and still fetches all of its mailboxes now and again (every 20 s while
+watching, every 4 s from a relay that refuses op 4). A device names its
+mailboxes again when they change (a new day's, a new chat's) and on every
+new connection; the relay forgets a connection's list when it closes. `handle = H(envelope)` truncated to 16 bytes (equal envelopes
 dedupe). It keeps everything in RAM, expires it after the TTL, bounds bytes
 per mailbox and in all, bounds rooms and members, and logs nothing.
 
@@ -909,6 +927,7 @@ per mailbox and in all, bounds rooms and members, and logs nothing.
 | Window | 63 sequences |
 | History epoch | every 50 messages or daily |
 | Live acknowledgement wait | 30 s |
+| Mailbox fetched, all of it | every 4 s; every 20 s while the relay tells of mail (protocol 11) |
 | Control frames kept / resent | 5 min / every 10 s |
 | Delivery default | live only |
 | File chunk / largest file | 64 KiB / 100 MB |

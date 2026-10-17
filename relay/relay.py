@@ -38,13 +38,15 @@ PIECE_SIZES = {1 + 32 + 24 + 16 + b for b in BUCKETS}
 PAIR_BOX = SEAL + 1024
 
 OK, REFUSED, BURNED, BUSY, QUOTA, NOT_FOUND = 0, 1, 2, 3, 4, 5
-PUT, FETCH, DELETE = 1, 2, 3
+PUT, FETCH, DELETE, WATCH = 1, 2, 3, 4
 PAIR_POST, PAIR_FETCH, PAIR_REUSABLE, PAIR_CANCEL, PAIR_DONE = 16, 17, 18, 19, 20
 JOIN, SIGNAL, LEAVE = 32, 33, 34
 PUSH_SUBSCRIBE, PUSH_FORWARD = 48, 49
 # Push services a forwarded push may go to (protocol 6): the browsers' own.
 PUSH_HOSTS = ('fcm.googleapis.com', 'push.services.mozilla.com', 'web.push.apple.com', 'notify.windows.com')
 PUSHED_SIGNAL = 0x40
+# Protocol 11: a connection watching a mailbox is told at once that mail is waiting there.
+PUSHED_MAIL = 0x41
 
 
 class Refused(Exception):
@@ -94,6 +96,7 @@ class Limits:
         self.rooms_per_connection = 64
         self.queue = a.queue
         self.fetch_ids = 1024
+        self.watches = a.watches
         self.reusable_posts = 16
         self.push_hosts = PUSH_HOSTS + tuple(a.push_host or ())
         self.push_local = a.push_local
@@ -111,6 +114,8 @@ class Relay:
         self.tokens = {}                         # token -> dict
         self.rooms = {}                          # room -> {label: connection}
         self.subscriptions = {}                  # mailbox -> (expires, subscription)
+        self.watchers = {}                       # mailbox -> {connection}: told when mail comes
+        self.watched = 0
 
     # Expiry: lazily where touched, and in a sweep.
     def sweep(self):
@@ -148,6 +153,10 @@ class Relay:
             return QUOTA
         box[handle] = (self.clock() + self.limits.ttl, envelope)
         self.stored += len(envelope)
+        # Whoever watches this mailbox is told, now: no envelope, only its
+        # mailbox (best effort - a full queue drops the notice; it fetches anyway).
+        for conn in self.watchers.get(mid, ()):
+            conn.offer(bytes([1, PUSHED_MAIL]) + b'\0\0\0\0' + mid)
         if self.push and mid in self.subscriptions:
             self.push.notify(self.subscriptions[mid][1])
         return OK
@@ -169,6 +178,29 @@ class Relay:
             for handle, (_, envelope) in self.mailboxes.get(mid, {}).items():
                 out.append((mid, handle, envelope))
         return out
+
+    # Watching: a connection names the mailboxes it fetches (the same ids a
+    # fetch names), and is told when one gets mail. The list replaces the last.
+    def watch(self, ids, conn):
+        ids = set(ids)
+        if self.watched - len(conn.watching) + len(ids) > self.limits.watches:
+            return QUOTA
+        self.unwatch(conn)
+        for mid in ids:
+            self.watchers.setdefault(mid, set()).add(conn)
+        conn.watching = ids
+        self.watched += len(ids)
+        return OK
+
+    def unwatch(self, conn):
+        for mid in conn.watching:
+            w = self.watchers.get(mid)
+            if w is not None:
+                w.discard(conn)
+                if not w:
+                    del self.watchers[mid]
+        self.watched -= len(conn.watching)
+        conn.watching = set()
 
     def delete(self, mid, handles):
         box = self.mailboxes.get(mid)
@@ -296,13 +328,14 @@ class Relay:
     def drop(self, conn):
         for room in list(conn.rooms):
             self.leave(room, conn)
+        self.unwatch(conn)
 
 
 class Connection:
     """One client's bounded outgoing queue. A full queue is backpressure."""
 
     def __init__(self, ws, limit):
-        self.ws, self.rooms = ws, {}
+        self.ws, self.rooms, self.watching = ws, {}, set()
         self.queue = asyncio.Queue(limit)
         self.forwarded = []  # when this connection last forwarded pushes (for the rate)
 
@@ -350,6 +383,13 @@ def handle(relay, conn, data):
         handles = [r.take(16) for _ in range(n)]
         r.end()
         return answer(op, rid, relay.delete(mid, handles))
+    if op == WATCH:
+        n = r.u16()
+        if n > relay.limits.fetch_ids:
+            raise Refused('watch count')
+        ids = [r.take(32) for _ in range(n)]
+        r.end()
+        return answer(op, rid, relay.watch(ids, conn))
     if op == PAIR_POST:
         token, box = r.take(16), r.take(len(data) - r.at)
         if len(box) != PAIR_BOX:
@@ -549,6 +589,7 @@ def arguments(argv=None):
     p.add_argument('--tokens', type=int, default=65536)
     p.add_argument('--rooms', type=int, default=65536)
     p.add_argument('--members', type=int, default=16)
+    p.add_argument('--watches', type=int, default=1 << 20, help='mailboxes watched, over all connections')
     p.add_argument('--queue', type=int, default=256, help='frames waiting for one client')
     p.add_argument('--vapid-key', help='P-256 private key (PEM) for Web Push; off when absent')
     p.add_argument('--push-host', action='append', help='a further push service host forwarded pushes may go to')

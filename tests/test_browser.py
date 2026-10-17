@@ -94,16 +94,23 @@ window.result = await check(chat, JSON.parse(vec.vectors()), kept);
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('mode', choices=['vectors', 'e2e', 'release', 'meet'])
+    p.add_argument('mode', choices=['vectors', 'e2e', 'release', 'meet', 'lag'])
     p.add_argument('--wasm', required=True)
     p.add_argument('--browser', default=os.environ.get('SGCHAT_BROWSER', ''))
     p.add_argument('--echo', default='', help='the native echo bot (sgchat_echo)')
+    p.add_argument('--rtt', type=int, default=80, help='lag: the relay\'s round trip, made by a proxy (ms)')
+    p.add_argument('--cases', default='', help='lag: which of live,reopen,relay (all by default)')
+    p.add_argument('--trace', action='store_true', help='lag: print what the relay was asked')
+    p.add_argument('--count', type=int, default=12, help='lag: messages per series')
     a = p.parse_args()
     if a.mode == 'vectors':
         sys.exit(vectors(a))
     if a.mode == 'release':
         import release_browser
         sys.exit(release_browser.run(a, serve, launch))
+    if a.mode == 'lag':
+        import lag_browser
+        sys.exit(lag_browser.run(a, serve, launch))
     if a.mode == 'meet':
         import meet_browser
         sys.exit(meet_browser.run(a, serve, launch))

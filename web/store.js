@@ -96,6 +96,10 @@ export const dropHeld = (key) => c.del('meta', 'held:' + key);
 export const held = () => rangeSealed('meta', 'held:');
 export const saveOutbox = (id, o) => putSealed('meta', 'out:' + id, o);
 export const dropOutbox = (id) => c.del('meta', 'out:' + id);
+export async function outboxItem(id) {
+  const o = await getSealed('meta', 'out:' + id);
+  return o ? { id, ...o } : null;
+}
 export async function outbox() {
   const out = [];
   for (const k of await c.allKeys('meta')) if (String(k).startsWith('out:')) out.push({ id: k.slice(4), ...(await getSealed('meta', k)) });

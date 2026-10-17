@@ -1,7 +1,8 @@
 """Phase 2: the relay, run as its own process and spoken to over WebSockets.
 
 Token burn, reusable token cancel, TTL expiry, quotas, room isolation,
-malformed-frame refusal, backpressure, Web Push, and that it says nothing.
+mailboxes watched (mail waiting told at once), malformed-frame refusal,
+backpressure, Web Push, and that it says nothing.
 
     python tests/test_relay.py                      relay/relay.py
     python tests/test_relay.py --worker relay/worker   the Cloudflare Worker, under `wrangler dev`
@@ -40,7 +41,7 @@ WORKER = None  # the Cloudflare Worker's folder, when it is the one tested
 class Dev:
     """`wrangler dev` with a store of its own: started as relay.py would be, its flags as vars."""
 
-    VARS = {'--ttl': 'TTL', '--mailbox-blobs': 'MAILBOX_BLOBS', '--mailbox-bytes': 'MAILBOX_BYTES', '--total-bytes': 'TOTAL_BYTES'}
+    VARS = {'--watches': 'WATCHES', '--ttl': 'TTL', '--mailbox-blobs': 'MAILBOX_BLOBS', '--mailbox-bytes': 'MAILBOX_BYTES', '--total-bytes': 'TOTAL_BYTES'}
 
     def __init__(self, extra):
         import socket
@@ -98,7 +99,7 @@ class Client:
         await self.ws.send(bytes([1, op]) + struct.pack('>I', self.rid) + body)
         while True:
             data = await self.ws.recv()
-            if data[1] == 0x40:
+            if data[1] in (0x40, 0x41):
                 self.pushed.append(data)
                 continue
             assert data[1] == op | 0x80 and struct.unpack('>I', data[2:6])[0] == self.rid, data[:8]
@@ -209,6 +210,67 @@ async def main_checks(port):
             check(False, 'text frame closes')
         except Exception:
             check(c.ws.close_code == 1003, 'closed 1003 for a text frame')
+
+
+async def watch_checks(port):
+    """Protocol 11: a connection names the mailboxes it fetches and is told,
+    at once, when one gets mail - its mailbox only, never the envelope."""
+    url = f'ws://127.0.0.1:{port}'
+    async with connect(url, max_size=None) as a_ws, connect(url, max_size=None) as d_ws, connect(url, max_size=None) as e_ws:
+        a, d, e = Client(a_ws), Client(d_ws), Client(e_ws)
+        m3, m4, m5 = b'\x83' * 32, b'\x84' * 32, b'\x85' * 32
+
+        async def heard(client, seconds=3):
+            end = time.time() + seconds
+            while time.time() < end:
+                if client.pushed:
+                    return client.pushed.pop(0)
+                try:
+                    client.pushed.append(await asyncio.wait_for(client.ws.recv(), max(0.05, end - time.time())))
+                except asyncio.TimeoutError:
+                    break
+            return client.pushed.pop(0) if client.pushed else None
+
+        check((await d.call(4, struct.pack('>H', 2) + m3 + m4))[0] == OK, 'watch two mailboxes')
+        check((await d.call(4, struct.pack('>H', 2) + m3))[0] == REFUSED, 'watch truncated')
+        check((await d.call(4, struct.pack('>H', 1) + m3 + b'x'))[0] == REFUSED, 'watch trailing byte')
+        check((await d.call(4, struct.pack('>H', 1025) + m3 * 1025))[0] == REFUSED, 'at most 1024 watched')
+        # A refused watch leaves the last as it was.
+        e3 = envelope(m3, 11)
+        t0 = time.time()
+        check((await a.call(1, e3))[0] == OK, 'put to a watched mailbox')
+        got = await heard(d)
+        check(got == bytes([1, 0x41, 0, 0, 0, 0]) + m3, 'the watcher is told: its mailbox, nothing more: ' + repr(got and got[:8]))
+        check(time.time() - t0 < 1, 'told at once')
+        check(await heard(e, 0.3) is None and await heard(a, 0.1) is None, 'no one else is told')
+        check((await a.call(1, e3))[0] == OK and await heard(d, 0.3) is None, 'the same envelope again: nothing new, nothing told')
+        check(fetched((await d.call(2, struct.pack('>H', 1) + m3))[1])[0][2] == e3, 'and the mail is there to fetch')
+        # The list replaces the last; an empty one ends watching.
+        check((await d.call(4, struct.pack('>H', 1) + m5))[0] == OK, 'watch another')
+        check((await a.call(1, envelope(m4, 12)))[0] == OK and await heard(d, 0.3) is None, 'a mailbox no longer watched: not told')
+        check((await e.call(4, struct.pack('>H', 1) + m5))[0] == OK, 'two connections watch one mailbox')
+        check((await a.call(1, envelope(m5, 13)))[0] == OK, 'put to it')
+        check(await heard(d) == bytes([1, 0x41, 0, 0, 0, 0]) + m5 and await heard(e) == bytes([1, 0x41, 0, 0, 0, 0]) + m5, 'both are told')
+        check((await d.call(4, struct.pack('>H', 0)))[0] == OK, 'watch nothing')
+        check((await a.call(1, envelope(m5, 14)))[0] == OK and await heard(d, 0.3) is None, 'and nothing is told')
+        check(await heard(e) == bytes([1, 0x41, 0, 0, 0, 0]) + m5, 'the other still is')
+    # A watcher that closed is forgotten: a put is answered as ever.
+    async with connect(url, max_size=None) as a_ws:
+        check((await Client(a_ws).call(1, envelope(m5, 15)))[0] == OK, 'put after the watchers closed')
+
+
+async def watch_quota_checks(port):
+    url = f'ws://127.0.0.1:{port}'
+    async with connect(url) as a_ws, connect(url) as b_ws:
+        a, b = Client(a_ws), Client(b_ws)
+        ids = [bytes([0x90 + i]) * 32 for i in range(4)]
+        check((await a.call(4, struct.pack('>H', 2) + ids[0] + ids[1]))[0] == OK, 'watch within the bound')
+        check((await b.call(4, struct.pack('>H', 2) + ids[2] + ids[3]))[0] == QUOTA, 'watches over all connections are bounded')
+        check((await a.call(4, struct.pack('>H', 3) + ids[0] + ids[1] + ids[2]))[0] == OK, 'a connection\'s own list is replaced, not added to')
+        check((await b.call(4, struct.pack('>H', 1) + ids[3]))[0] == QUOTA, 'still bounded')
+    async with connect(url) as b_ws:
+        await asyncio.sleep(0.3)
+        check((await Client(b_ws).call(4, struct.pack('>H', 3) + ids[1] + ids[2] + ids[3]))[0] == OK, 'a closed connection\'s watches are freed')
 
 
 async def quota_checks(port):
@@ -332,10 +394,18 @@ def main():
     relay, port, _ = start('--ttl', '600')
     try:
         asyncio.run(main_checks(port))
+        asyncio.run(watch_checks(port))
     finally:
         relay.terminate()
         out, err = relay.communicate(timeout=10)
         check(out == '' and err == '', 'the relay says nothing beyond READY: ' + repr((out, err)))
+
+    relay, port, _ = start('--watches', '3')
+    try:
+        asyncio.run(watch_quota_checks(port))
+    finally:
+        relay.terminate()
+        relay.communicate(timeout=10)
 
     relay, port, _ = start('--ttl', '2', '--mailbox-blobs', '2', '--mailbox-bytes', '4000', '--total-bytes', '3500')
     try:

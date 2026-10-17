@@ -18,10 +18,12 @@ const ENVELOPE_VERSIONS = new Set([1, 2, 16]);
 const PIECE_SIZES = new Set(BUCKETS.map((b) => 1 + 32 + 24 + 16 + b));
 const PAIR_BOX = SEAL + 1024;
 const OK = 0, REFUSED = 1, BURNED = 2, BUSY = 3, QUOTA = 4, NOT_FOUND = 5;
-const OP = { put: 1, fetch: 2, del: 3, pairPost: 16, pairFetch: 17, pairReusable: 18, pairCancel: 19, pairDone: 20,
+const OP = { put: 1, fetch: 2, del: 3, watch: 4, pairPost: 16, pairFetch: 17, pairReusable: 18, pairCancel: 19, pairDone: 20,
   join: 32, signal: 33, leave: 34, subscribe: 48, forward: 49 };
 const PUSH_HOSTS = ['fcm.googleapis.com', 'push.services.mozilla.com', 'web.push.apple.com', 'notify.windows.com'];
 const PUSHED_SIGNAL = 0x40;
+// Protocol 11: a connection watching a mailbox is told at once that mail is waiting there.
+const PUSHED_MAIL = 0x41;
 
 class Refused extends Error {}
 class Reader {
@@ -62,20 +64,25 @@ export class Relay {
     this.limits = {
       ttl: n('TTL', 14 * 86400) * 1000, mailboxBytes: n('MAILBOX_BYTES', 8 << 20), mailboxBlobs: n('MAILBOX_BLOBS', 512),
       totalBytes: n('TOTAL_BYTES', 512 << 20), tokens: n('TOKENS', 65536), rooms: n('ROOMS', 65536), members: n('MEMBERS', 16),
-      roomsPerConnection: 64, fetchIds: 1024, reusablePosts: 16, forwardsPerMinute: 60, pushLocal: env.PUSH_LOCAL === '1',
+      roomsPerConnection: 64, fetchIds: 1024, watches: n('WATCHES', 1 << 20), reusablePosts: 16, forwardsPerMinute: 60, pushLocal: env.PUSH_LOCAL === '1',
     };
     this.sql = ctx.storage.sql;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS mail (mid BLOB, handle BLOB, exp INTEGER, env BLOB, PRIMARY KEY (mid, handle));
       CREATE INDEX IF NOT EXISTS mail_exp ON mail (exp);
       CREATE TABLE IF NOT EXISTS tokens (token BLOB PRIMARY KEY, reusable INTEGER, burned INTEGER, cancel BLOB, exp INTEGER);
       CREATE TABLE IF NOT EXISTS posts (token BLOB, n INTEGER, box BLOB);
-      CREATE TABLE IF NOT EXISTS joined (conn TEXT, room BLOB, label BLOB, PRIMARY KEY (conn, room));`);
+      CREATE TABLE IF NOT EXISTS joined (conn TEXT, room BLOB, label BLOB, PRIMARY KEY (conn, room));
+      CREATE TABLE IF NOT EXISTS watched (conn TEXT, mid BLOB, PRIMARY KEY (conn, mid));
+      CREATE INDEX IF NOT EXISTS watched_mid ON watched (mid);`);
     // Rooms, from the connections still open (a connection's id is its attachment).
     this.rooms = new Map();        // room hex -> Map(label hex -> ws)
     this.forwarded = new Map();    // connection id -> times it forwarded a push (last minute)
     this.forwarding = 0;
-    const open = new Map();
+    const open = (this.sockets = new Map());  // connection id -> its WebSocket
     for (const ws of ctx.getWebSockets()) { const a = ws.deserializeAttachment(); if (a?.id) open.set(a.id, ws); }
+    // Mailboxes watched by connections that closed while the object slept: forgotten.
+    for (const row of this.sql.exec('SELECT DISTINCT conn FROM watched').toArray())
+      if (!open.has(row.conn)) this.sql.exec('DELETE FROM watched WHERE conn = ?', row.conn);
     for (const row of this.sql.exec('SELECT conn, room, label FROM joined').toArray()) {
       const ws = open.get(row.conn);
       if (!ws) { this.sql.exec('DELETE FROM joined WHERE conn = ?', row.conn); continue; }
@@ -89,7 +96,9 @@ export class Relay {
   async fetch() {
     const [client, server] = Object.values(new WebSocketPair());
     this.ctx.acceptWebSocket(server);
-    server.serializeAttachment({ id: crypto.randomUUID() });
+    const id = crypto.randomUUID();
+    server.serializeAttachment({ id });
+    this.sockets.set(id, server);
     await this.alarmSoon();
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -134,6 +143,8 @@ export class Relay {
       if (members && !members.size) this.rooms.delete(room);
     }
     this.sql.exec('DELETE FROM joined WHERE conn = ?', id);
+    this.sql.exec('DELETE FROM watched WHERE conn = ?', id);
+    this.sockets.delete(id);
     this.forwarded.delete(id);
   }
 
@@ -167,6 +178,22 @@ export class Relay {
         for (let i = 0; i < n; i++) handles.push(r.take(16));
         r.end();
         for (const h of handles) this.sql.exec('DELETE FROM mail WHERE mid = ? AND handle = ?', mid, h);
+        return answer(op, rid, OK);
+      }
+      case OP.watch: {
+        // The mailboxes this connection fetches, named again: it is told when
+        // one gets mail. The list replaces the last.
+        const n = r.u16();
+        if (n > this.limits.fetchIds) throw new Refused('watch count');
+        const ids = new Map();
+        for (let i = 0; i < n; i++) { const mid = r.take(32); ids.set(hex(mid), mid); }
+        r.end();
+        const id = this.id(ws);
+        const mine = this.sql.exec('SELECT count(*) AS n FROM watched WHERE conn = ?', id).one().n;
+        const all = this.sql.exec('SELECT count(*) AS n FROM watched').one().n;
+        if (all - mine + ids.size > this.limits.watches) return answer(op, rid, QUOTA);
+        this.sql.exec('DELETE FROM watched WHERE conn = ?', id);
+        for (const mid of ids.values()) this.sql.exec('INSERT INTO watched VALUES (?, ?)', id, mid);
         return answer(op, rid, OK);
       }
       case OP.pairPost: {
@@ -258,6 +285,10 @@ export class Relay {
     const all = this.sql.exec('SELECT coalesce(sum(length(env)), 0) AS b FROM mail WHERE exp > ?', now).one();
     if (all.b + envelope.length > this.limits.totalBytes) return QUOTA;
     this.sql.exec('INSERT INTO mail VALUES (?, ?, ?, ?)', mid, handle, now + this.limits.ttl, envelope);
+    // Whoever watches this mailbox is told, now: no envelope, only its mailbox.
+    for (const row of this.sql.exec('SELECT conn FROM watched WHERE mid = ?', mid).toArray()) {
+      try { this.sockets.get(row.conn)?.send(cat(new Uint8Array([1, PUSHED_MAIL, 0, 0, 0, 0]), mid)); } catch { /* it fetches anyway */ }
+    }
     await this.alarmSoon();
     return OK;
   }

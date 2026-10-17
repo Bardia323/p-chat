@@ -20,6 +20,13 @@ const CONTROL_KEEP_MS = 5 * 60e3;
 const SIGNAL_KEEP_MS = 10 * 60e3;
 const CONTROL_AGAIN_MS = 10e3;
 const FETCH_MS = 4000;
+// A relay that tells of mail as it comes (protocol 11) is still asked for
+// all of it this often, in case a notice was lost on the way.
+const WATCHED_FETCH_MS = 20e3;
+// A relay's connection asked something on coming back, and silent this long: made again.
+const RELAY_QUIET_MS = 3000;
+// Away this long (hidden, asleep): links that are not up are made again on coming back.
+const AWAY_MS = 10e3;
 const SWEEP_MS = 5000;
 // A message's content key, kept with it (unless the chat has no recovery):
 // what a recovered device can be given.
@@ -31,10 +38,12 @@ const CARRY_AGAIN_MS = 5000, CARRY_KEEP_MS = 120e3;
 // up (a while after), or after this long.
 const PAIR_LINK_MS = 10 * 60e3;
 
-const OP = { put: 1, fetch: 2, del: 3, pairPost: 16, pairFetch: 17, pairReusable: 18, pairCancel: 19, pairDone: 20,
+const OP = { put: 1, fetch: 2, del: 3, watch: 4, pairPost: 16, pairFetch: 17, pairReusable: 18, pairCancel: 19, pairDone: 20,
   join: 32, signal: 33, leave: 34, pushForward: 49 };
 // One push per conversation and recipient device in this long, at most.
 const PING_GAP_MS = 20e3;
+// How much a fetch asks for (the higher includes the lower).
+const FETCH = { told: 1, round: 2, all: 3 };
 export const STATUS = { ok: 0, refused: 1, burned: 2, busy: 3, quota: 4, missing: 5 };
 
 const cat = (...parts) => {
@@ -48,19 +57,46 @@ const u32 = (n) => new Uint8Array([n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, 
 const read32 = (b, at) => ((b[at] << 24) >>> 0) + (b[at + 1] << 16) + (b[at + 2] << 8) + b[at + 3];
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// One relay: binary frames, a request and its answer by id, signals pushed.
+// The live links' own events - a candidate found, a description set, a
+// channel open or closed, a frame come - wake the host's round at once: the
+// transport's queues are read only when the App is pumped, and its round
+// otherwise comes once a second (a signal or a message waiting for it).
+// Only listened to: nothing of a link is changed here.
+let wakeLinks = null;
+const listenChannel = (dc) => { for (const k of ['open', 'message', 'close', 'error']) dc.addEventListener(k, () => wakeLinks?.()); };
+function listenToLinks(wake) {
+  wakeLinks = wake;
+  const P = globalThis.RTCPeerConnection;
+  if (!P || P.pchatListened) return;
+  class Listened extends P {
+    constructor(...a) {
+      super(...a);
+      for (const k of ['icecandidate', 'icegatheringstatechange', 'signalingstatechange', 'connectionstatechange'])
+        this.addEventListener(k, () => wakeLinks?.());
+      this.addEventListener('datachannel', (e) => listenChannel(e.channel));
+    }
+    createDataChannel(...a) { const dc = super.createDataChannel(...a); listenChannel(dc); return dc; }
+  }
+  Listened.pchatListened = true;
+  globalThis.RTCPeerConnection = Listened;
+}
+
+// One relay: binary frames, a request and its answer by id, signals pushed,
+// and (protocol 11) word that mail is waiting in a mailbox this connection watches.
 export class Relay {
-  constructor(url, onSignal, onOpen) {
+  constructor(url, onSignal, onOpen, onMail) {
     if (!/^wss:\/\//.test(url) && !/^ws:\/\/(127\.0\.0\.1|localhost):/.test(url)) throw new Error('A relay address starts with wss://');
-    Object.assign(this, { url, onSignal, onOpen, next: 1, waiting: new Map(), backoff: 1000, closed: false });
+    Object.assign(this, { url, onSignal, onOpen, onMail, next: 1, waiting: new Map(), backoff: 1000, closed: false });
     this.open();
   }
   open() {
     if (this.closed) return;
     const ws = (this.ws = new WebSocket(this.url));
     ws.binaryType = 'arraybuffer';
-    ws.onopen = () => { this.backoff = 1000; this.onOpen?.(); };
+    // A new connection watches nothing yet, and has fetched nothing.
+    ws.onopen = () => { this.backoff = 1000; this.watched = null; this.watching = false; this.fetched = 0; this.onOpen?.(); };
     ws.onmessage = (e) => {
+      this.heard = Date.now();
       if (!(e.data instanceof ArrayBuffer)) return;
       const d = new Uint8Array(e.data);
       if (d.length < 6 || d[0] !== 1) return;
@@ -70,6 +106,10 @@ export class Relay {
         if (42 + n === d.length) this.onSignal?.(room, d.slice(42));
         return;
       }
+      if (d[1] === 0x41) {
+        if (d.length === 38) this.onMail?.(d.slice(6, 38));
+        return;
+      }
       const id = read32(d, 2), w = this.waiting.get(id);
       if (!w) return;
       this.waiting.delete(id);
@@ -77,18 +117,56 @@ export class Relay {
       w.resolve({ status: d[6], body: d.slice(7) });
     };
     ws.onclose = () => {
-      for (const w of this.waiting.values()) { clearTimeout(w.timer); w.reject(new Error('Lost the connection to the relay. Trying again…')); }
-      this.waiting.clear();
-      if (!this.closed) setTimeout(() => this.open(), this.backoff);
+      this.failWaiting();
+      if (!this.closed) this.retry = setTimeout(() => this.open(), this.backoff);
       this.backoff = Math.min(this.backoff * 2, 30000);
     };
+  }
+  failWaiting() {
+    for (const w of this.waiting.values()) { clearTimeout(w.timer); w.reject(new Error('Lost the connection to the relay. Trying again…')); }
+    this.waiting.clear();
+  }
+  // The connection dropped and opened again at once: one the browser still
+  // calls open that carries nothing (a phone that slept, a network that
+  // changed under it) would otherwise be waited on until it times out.
+  again() {
+    if (this.closed) return;
+    const ws = this.ws;
+    if (ws) {
+      ws.onopen = ws.onmessage = ws.onclose = null;
+      try { ws.close(); } catch { /* already gone */ }
+    }
+    this.failWaiting();
+    clearTimeout(this.retry);
+    this.backoff = 1000;
+    this.open();
+  }
+  // Asked when this device comes back (a tab shown, a phone woken, a network
+  // found): a connection that says nothing within a few seconds of being
+  // asked something is made again; one not open is opened now, not after
+  // its wait.
+  check() {
+    if (this.closed) return;
+    if (!this.up) {
+      if (this.ws?.readyState !== WebSocket.CONNECTING) this.again();
+      return;
+    }
+    const ws = this.ws, asked = Date.now();
+    this.call(OP.fetch, cat(u16(1), new Uint8Array(32))).catch(() => {});
+    setTimeout(() => { if (this.ws === ws && !((this.heard || 0) >= asked)) this.again(); }, RELAY_QUIET_MS);
   }
   get up() { return this.ws?.readyState === WebSocket.OPEN; }
   call(op, body = new Uint8Array(0)) {
     if (!this.up) return Promise.reject(new Error('Can\'t reach the relay right now. Trying again…'));
     const id = this.next++ >>> 0;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { this.waiting.delete(id); reject(new Error('The relay did not answer in time. Try again.')); }, 20000);
+      const ws = this.ws;
+      const timer = setTimeout(() => {
+        this.waiting.delete(id);
+        reject(new Error('The relay did not answer in time. Try again.'));
+        // Nothing heard on it all this while: the connection is made again.
+        if (this.ws === ws && Date.now() - (this.heard || 0) >= 20000) this.again();
+      }, 20000);
       this.waiting.set(id, { resolve, reject, timer });
       this.ws.send(cat(new Uint8Array([1, op]), u32(id), body));
     });
@@ -110,6 +188,8 @@ export class Relay {
     }
     return out;
   }
+  // The mailboxes this connection is told about, named again (replacing the last).
+  watch(ids) { return this.call(OP.watch, cat(u16(ids.length), ...ids)); }
   del(mailbox, handles) { return this.call(OP.del, cat(mailbox, u16(handles.length), ...handles)); }
   pairPost(token, box) { return this.call(OP.pairPost, cat(token, box)); }
   async pairFetch(token) {
@@ -134,7 +214,7 @@ export class Relay {
 export class Session {
   constructor(chat, ui) {
     Object.assign(this, { chat, ui, app: null, dev: null, relays: new Map(), conv: new Map(), busy: false, again: false,
-      media: null, timers: [], seenPosts: new Set(), config: { ice: [] }, sentLive: 0, sentMailbox: 0, queued: 0, signals: [], joined: new Set(), pinged: new Map(), pushes: [], statuses: new Map(), relinked: new Map(), opened: [], posts: new Set() });
+      media: null, timers: [], want: 0, told: new Set(), seenPosts: new Set(), config: { ice: [] }, sentLive: 0, sentMailbox: 0, queued: 0, signals: [], joined: new Set(), pinged: new Map(), pushes: [], statuses: new Map(), relinked: new Map(), opened: [], posts: new Set() });
   }
 
   // ---- starting ----
@@ -155,6 +235,7 @@ export class Session {
       now: () => Date.now(),
     });
     try { this.config = await (await fetch('config.json')).json(); } catch { /* none: no STUN/TURN */ }
+    listenToLinks(() => this.wake());
     this.persisted = await c.persist();
     // Chats this device can no longer open - its key gone, or not given back
     // by the browser - mean a device that was paired and is no more.
@@ -173,7 +254,7 @@ export class Session {
     const every = (name, ms, f) => this.timers.push(setInterval(() => Promise.resolve().then(f).catch((e) =>
       console.error('p-chat round failed:', name, e?.name, e?.message, e?.stack)), ms));
     every('pump', 1000, () => this.pump());
-    every('fetch', FETCH_MS, () => this.fetchAll());
+    every('fetch', FETCH_MS, () => this.fetchAll(FETCH.round));
     every('pairing', PAIR_POLL_MS, () => this.pollPairing());
     every('signals', 1500, () => this.signals.length && this.sendSignals());
     every('media', 1200, () => this.media.tick());
@@ -184,8 +265,34 @@ export class Session {
     every('release', 60000, () => this.announceRelease());
     every('release-files', 1500, () => this.askReleaseAgain());
     setTimeout(() => this.announceRelease().catch(() => {}), 3000);
-    document.addEventListener?.('visibilitychange', () => document.visibilityState === 'visible' && this.fetchAll());
+    document.addEventListener?.('visibilitychange', () => (document.visibilityState === 'visible' ? this.back() : (this.hidden = Date.now())));
+    addEventListener?.('online', () => this.back(true));
     return true;
+  }
+  // Back: shown again, woken, or on a network again. What may have gone
+  // quiet meanwhile is asked at once - the relay's connection, the mail -
+  // and, after a while away, the links that are not up are made again
+  // where they can be (rather than when a message has waited for them).
+  back(moved = false) {
+    const away = this.hidden ? Date.now() - this.hidden : 0;
+    this.hidden = 0;
+    // Long away, or on another network: its connection is very likely gone,
+    // whatever the browser says - made again now. Else asked, and made again
+    // only if it says nothing.
+    for (const r of this.relays.values()) (moved || away >= AWAY_MS ? r.again() : r.check());
+    this.fetchAll();
+    if (!this.app || (!moved && away < AWAY_MS)) return;
+    const now = Date.now(), live = new Set(this.app.livePeers());
+    for (const id of this.app.conversations()) {
+      const info = this.app.info(id);
+      if (info.removed || info.kind === 2) continue;
+      for (const m of info.members) {
+        if (m.self || live.has(m.peer) || now - (this.relinked.get(m.peer) || 0) < 15000 || !this.canRelink(id, m.peer)) continue;
+        this.relinked.set(m.peer, now);
+        try { this.app.reconnectLive(m.peer); } catch { /* no link to it was ever begun */ }
+      }
+    }
+    this.pump();
   }
   async startApp(records) {
     // A device introduces itself by no name: each side names the other, on its own phone.
@@ -242,8 +349,15 @@ export class Session {
       const r = new Relay(url, (room, box) => { this.app?.signalIn(room, box); this.pump(); }, () => {
         for (const k of [...this.joined]) if (this.relayUrlOf(k.split(':')[0]) === url) this.joined.delete(k);
         this.joinRooms(url);
+        this.watchMail(r);
         this.fetchAll();
         this.flushOutbox();
+        // Signals kept while it was away go now, not at the next turn.
+        if (this.signals.length) this.sendSignals().catch(() => {});
+      }, (mailbox) => {
+        // Mail waiting: fetched now, not at the next round.
+        this.told.add(c.hex(mailbox));
+        this.fetchAll(FETCH.told);
       });
       this.relays.set(url, r);
     }
@@ -328,32 +442,51 @@ export class Session {
     }
     return out;
   }
+  // Signals go out in the order they were made, all at once (each a frame on
+  // the one connection, answered in turn): a link's dozen candidates are not
+  // a dozen round trips one after another. One sending at a time; what is
+  // made meanwhile goes right after, behind what is kept to try again.
   async sendSignals() {
-    const keep = [], now = Date.now();
-    for (const s of this.signals) {
-      const relay = this.relayOf(s.conversation);
-      let taken = false;
-      if (relay?.up) {
-        if (!this.joined.has(s.conversation + ':' + c.hex(s.room))) await this.joinRooms(relay.url);
+    if (this.signalling) { this.signalAgain = true; return; }
+    this.signalling = true;
+    try {
+      do {
+        this.signalAgain = false;
+        const now = Date.now(), batch = this.signals;
+        this.signals = [];
+        const relays = batch.map((s) => this.relayOf(s.conversation));
+        for (let i = 0; i < batch.length; i++)
+          if (relays[i]?.up && !this.joined.has(batch[i].conversation + ':' + c.hex(batch[i].room))) await this.joinRooms(relays[i].url);
         // Kept until the other end is in the room to take it: a restart said
         // while it was away is what lets the two sessions meet again.
-        const r = await relay.signal(s.room, s.label, s.box).catch(() => null);
-        taken = r?.status === STATUS.ok;
-      }
-      // No relay took it: the phones linked here pass it on (and the link
-      // made to pair in person, while it is up), now and again for a while.
-      if (!taken && now - (s.carried || 0) >= CARRY_AGAIN_MS && now - s.made < CARRY_KEEP_MS) {
-        s.carried = now;
-        this.carrier.signal(s);
-        const p = this.pairing;
-        if (p?.link.up && p.conv === s.conversation) p.link.send(FRAME.signal, cat(s.room, s.box));
-      }
-      if (!taken && now < s.until) keep.push(s);
+        const answers = await Promise.all(batch.map((s, i) => (relays[i]?.up ? relays[i].signal(s.room, s.label, s.box).catch(() => null) : null)));
+        const keep = [];
+        batch.forEach((s, i) => {
+          const taken = answers[i]?.status === STATUS.ok;
+          // No relay took it: the phones linked here pass it on (and the link
+          // made to pair in person, while it is up), now and again for a while.
+          if (!taken && now - (s.carried || 0) >= CARRY_AGAIN_MS && now - s.made < CARRY_KEEP_MS) {
+            s.carried = now;
+            this.carrier.signal(s);
+            const p = this.pairing;
+            if (p?.link.up && p.conv === s.conversation) p.link.send(FRAME.signal, cat(s.room, s.box));
+          }
+          if (!taken && now < s.until) keep.push(s);
+        });
+        this.signals = keep.concat(this.signals);
+      } while (this.signalAgain);
+    } finally {
+      this.signalling = false;
     }
-    this.signals = keep;
   }
 
   // ---- the pump: ask, keep, carry, tell ----
+  // Pumped as soon as what is running now is done (a link's event, often
+  // several together: one pump for them all).
+  wake() {
+    if (this.woken) return;
+    this.woken = setTimeout(() => { this.woken = 0; this.pump(); }, 0);
+  }
   async pump() {
     if (!this.app) return;
     if (this.busy) { this.again = true; return; }
@@ -538,7 +671,7 @@ export class Session {
       if (expires && o.mailbox_ok && target)
         await store.saveCopy(c.hex(c.random(8)), { conv: o.conversation, url: target.url, mailbox: env.slice(1, 33),
           handle: this.chat.blake2b(16, new Uint8Array(0), env), made: Date.now(), expires });
-      if (o.live && this.app.sendLive(o.peer, env)) {
+      if (o.live && this.sendLive(o.peer, env)) {
         this.sentLive++;
         // Sent live: kept until acknowledged, then dropped; else, after a
         // while, sent live again, or left in the mailbox if the recipient
@@ -546,12 +679,17 @@ export class Session {
         // A link can say it is up a moment after the other end has gone: for
         // a device that takes mail, a copy waits in its mailbox too (it
         // keeps the first it opens and drops the twin).
-        let relayed = false;
-        if (o.mailbox_ok && target) {
-          const r = await target.put(env).catch(() => null);
-          relayed = r?.status === STATUS.ok;
-        }
-        if (o.sequence > 0 || control) await store.saveOutbox(c.hex(c.random(8)), { ...item, live: Date.now(), relayed });
+        // That copy is not waited for: what comes after this envelope (the
+        // next message, an envelope that came in) is not held back by the
+        // relay's round trip. Marked as left there once the relay says so.
+        const kept = o.sequence > 0 || control, id = c.hex(c.random(8));
+        if (kept) await store.saveOutbox(id, { ...item, live: Date.now(), relayed: false });
+        if (o.mailbox_ok && target)
+          target.put(env).then(async (r) => {
+            if (r?.status !== STATUS.ok || !kept) return;
+            const still = await this.outboxItem(id);
+            if (still.id) await store.saveOutbox(id, { ...still, relayed: true });
+          }).catch(() => {});
         await this.status(o, 'sent');
         return;
       }
@@ -616,8 +754,18 @@ export class Session {
       const mine = this.signals.filter((s) => s.peer === o.peer);
       if (mine.length > 48) this.signals.splice(this.signals.indexOf(mine[0]), 1);
       if (this.signals.length > 512) this.signals.shift();
-      await this.sendSignals();
+      // Not waited for: the round's other signals (a description and its
+      // candidates come together) go with it, in one batch, right after.
+      if (!this.signalSoon) this.signalSoon = setTimeout(() => { this.signalSoon = 0; this.sendSignals().catch(() => {}); }, 0);
     }
+  }
+  // An envelope on the live link goes out now: the transport only queues it
+  // until it is next stepped, and the round may still wait on the relay
+  // (the mailbox copy) before it would.
+  sendLive(peer, env) {
+    if (!this.app.sendLive(peer, env)) return false;
+    this.app.tickLive(Date.now());
+    return true;
   }
   // A message's status is its most hopeful state across its recipients.
   async status(o, s) {
@@ -636,7 +784,7 @@ export class Session {
       if (r.status === STATUS.ok && keepForAck) await store.saveOutbox(id, { ...(await this.outboxItem(id)), relayed: true });
     } catch { /* kept: sent again when the relay is back */ }
   }
-  async outboxItem(id) { return (await store.outbox()).find((o) => o.id === id) || {}; }
+  async outboxItem(id) { return (await store.outboxItem(id)) || {}; }
   async flushOutbox() {
     for (const o of await store.outbox()) {
       if (o.relayed || o.live) continue;
@@ -646,13 +794,17 @@ export class Session {
   }
   async retryUnacked() {
     const now = Date.now();
-    if (now - (this.lastRetry || 0) < 1500) return;
+    // A link just come up: what waits for it goes now, not at the next turn.
+    const live = this.app.livePeers().sort().join();
+    const linked = live !== this.lastLive;
+    this.lastLive = live;
+    if (!linked && now - (this.lastRetry || 0) < 1500) return;
     this.lastRetry = now;
     for (const o of await store.outbox()) {
       if (o.control) {
         if (now > o.until) { await store.dropOutbox(o.id); continue; }
         if ((o.live && now - o.live > CONTROL_AGAIN_MS) || o.waiting) {
-          if (this.app.sendLive(o.peer, o.env)) await store.saveOutbox(o.id, { ...o, waiting: false, live: now });
+          if (this.sendLive(o.peer, o.env)) await store.saveOutbox(o.id, { ...o, waiting: false, live: now });
           else if (o.mailbox && !o.relayed) {
             const relay = this.relayOf(o.conv);
             const r = relay?.up ? await relay.put(o.env).catch(() => null) : null;
@@ -683,7 +835,7 @@ export class Session {
         if (r?.status === STATUS.ok) await store.saveOutbox(o.id, { ...o, waiting: false, mailbox: true, relayed: true, live: now });
         continue;
       }
-      if (o.waiting && this.app.sendLive(o.peer, o.env)) {
+      if (o.waiting && this.sendLive(o.peer, o.env)) {
         this.sentLive++;
         await store.saveOutbox(o.id, { ...o, waiting: false, live: now });
         await this.status({ conversation: o.conv, sequence: o.seq }, 'sent');
@@ -739,31 +891,75 @@ export class Session {
     await this.pump();
     return r;
   }
-  async fetchAll() {
-    if (!this.app || this.fetching) return;
+  // The mailboxes a relay is to tell this device about: every chat's on it,
+  // named again when they change (a new day's, a new chat's). A relay that
+  // cannot (before protocol 11) is asked each round instead.
+  async watchMail(relay) {
+    if (!this.app || !relay?.up) return;
+    const ids = [];
+    for (const id of this.conv.keys()) if (this.relayOf(id) === relay && !this.app.info(id).removed) ids.push(...this.app.mailboxesOf(id));
+    const key = ids.map((m) => c.hex(m)).sort().join();
+    if (relay.watched === key) return;
+    relay.watched = key;
+    if (ids.length > 1024) { relay.watching = false; return; }
+    const r = await relay.watch(ids).catch(() => null);
+    if (relay.watched !== key) return;  // named again meanwhile
+    if (r) relay.watching = r.status === STATUS.ok;
+    else relay.watched = null;  // not answered: tried again next round
+  }
+  // What is fetched: everything (at start, on coming back, a relay found
+  // again), a round's (what a relay that tells of mail did not tell, now and
+  // again), or only the mailboxes a relay said have mail. Asked while a
+  // fetch is going on, it is done right after.
+  async fetchAll(level = FETCH.all) {
+    if (!this.app) return;
+    this.want = Math.max(this.want, level);
+    if (this.fetching) return;
     this.fetching = true;
     try {
-      for (const [id, meta] of this.conv) {
-        const relay = this.relayOf(id);
-        if (!relay?.up) continue;
-        for (const item of await relay.fetch(this.app.mailboxesOf(id))) {
-          if (item.envelope[0] === 18) {
-            // A channel's post stays for its other readers: read once here.
-            const k = c.hex(item.handle);
-            if (this.posts.has(k)) continue;
-            this.posts.add(k);
-            this.opened.push([this.app.openPost(item.envelope).status, 'post']);
-            await this.pump();
-            continue;
+      while (this.want) {
+        const now = Date.now(), want = this.want, told = this.told;
+        this.want = 0;
+        this.told = new Set();
+        // Every chat's mailboxes at a relay asked for in one go (a round trip
+        // per relay, not per chat).
+        const asks = new Map();
+        for (const id of this.conv.keys()) {
+          const relay = this.relayOf(id);
+          if (!relay?.up) continue;
+          if (!asks.has(relay)) {
+            if (want >= FETCH.round) this.watchMail(relay).catch(() => {});
+            const all = want === FETCH.all || (want === FETCH.round && (!relay.watching || now - (relay.fetched || 0) >= WATCHED_FETCH_MS));
+            asks.set(relay, { all, ids: [] });
           }
-          const r = await this.open(item.envelope);
-          // Opened and kept (or not ours to keep): the blob goes.
-          if (r.status !== 'need_turn') await relay.del(item.mailbox, [item.handle]).catch(() => {});
+          const ask = asks.get(relay);
+          const ids = this.app.mailboxesOf(id);
+          ask.ids.push(...(ask.all ? ids : ids.filter((m) => told.has(c.hex(m)))));
         }
+        for (const [relay, ask] of asks) {
+          if (ask.ids.length) await this.fetchFrom(relay, ask.ids);
+          if (ask.all) relay.fetched = now;
+        }
+        if (want >= FETCH.round) await this.trackGaps();
       }
-      await this.trackGaps();
     } catch { /* again on the next round */ } finally {
       this.fetching = false;
+    }
+  }
+  async fetchFrom(relay, ids) {
+    for (const item of await relay.fetch(ids)) {
+      if (item.envelope[0] === 18) {
+        // A channel's post stays for its other readers: read once here.
+        const k = c.hex(item.handle);
+        if (this.posts.has(k)) continue;
+        this.posts.add(k);
+        this.opened.push([this.app.openPost(item.envelope).status, 'post']);
+        await this.pump();
+        continue;
+      }
+      const r = await this.open(item.envelope);
+      // Opened and kept (or not ours to keep): the blob goes.
+      if (r.status !== 'need_turn') await relay.del(item.mailbox, [item.handle]).catch(() => {});
     }
   }
   // A sequence still missing after the mailbox's life is a message that will not come.
