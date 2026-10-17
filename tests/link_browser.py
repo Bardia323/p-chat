@@ -199,11 +199,6 @@ def run(args, serve, launch):
             C.evaluate(f"window.pchat.session.send('{pc}', 'while-away-1')")
             C.evaluate(f"window.pchat.session.send('{pc}', 'while-away-2')")
             wait(P, f"{said(P, pc)}.then(s => s.includes('while-away-2'))", 60, 'P has them')
-            # C closes once its own round is done (what it keeps written down), as a person would a moment later.
-            wait(C, "!window.pchat.session.busy", 10, 'C is between rounds')
-            time.sleep(3)
-            print('     C before away:', C.evaluate(f"window.pchat.session.app.describe('{pc}')"), flush=True)
-            print('     P then:', P.evaluate(f"window.pchat.session.app.describe('{pc}')"), flush=True)
             C.goto('about:blank')
             start(D)
             wait(D, f"{said(D, pc)}.then(s => s.includes('while-away-1') && s.includes('while-away-2'))", 120,
@@ -231,9 +226,7 @@ def run(args, serve, launch):
             print('     screenshots in', shots, flush=True)
 
             # ---- 5. Keep: D leaves every chat (C back, to agree), keeping a copy to read ----
-            print('     P before C back:', P.evaluate(f"window.pchat.session.app.describe('{pc}')"), flush=True)
             start(C)
-            print('     C back:', C.evaluate(f"window.pchat.session.app.describe('{pc}')"), flush=True)
             D.evaluate("window.pchat.ui.screen('unlink', {unlinkFrom: window.pchat.session.app.linked()[0]})")
             D.click('[data-test=unlink-keep]')
             wait(D, "window.pchat.session.app.linked().length === 0", 20, 'D is unlinked')
