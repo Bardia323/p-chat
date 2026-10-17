@@ -236,6 +236,11 @@ def run(args, serve, launch):
             wait(D, "!!document.querySelector('[data-test=left]') && !!document.querySelector('[data-test=read-only]')", 20,
                  'it says so, and there is nothing to write in')
             check(D.evaluate(f"{said(D, pc)}.then(s => s.includes('to-both-of-you'))"), 'what was said is still there to read')
+            time.sleep(1.5)
+            D.screenshot(path=str(shots / 'read-only.png'))
+            P.evaluate("window.pchat.ui.screen('settings')")
+            time.sleep(1.5)
+            P.screenshot(path=str(shots / 'settings.png'), full_page=True)
             C.evaluate(f"window.pchat.session.send('{pc}', 'after-keep')")
             if not wait(P, f"{said(P, pc)}.then(s => s.includes('after-keep'))", 60, 'P still talks with C'):
                 diag(pc, P, C, D)

@@ -1432,7 +1432,11 @@ void App::control(Conversation& c, const Member& from, const ControlFrame& f) {
         Reader r(f.body);
         const auto v = decode_attestation(r);
         r.end();
-        if (v.signer != p) return;
+        // Only an endorsement of this handoff: a vote for an earlier one (a
+        // control frame is said again for a while) would take the signer's place.
+        if (v.signer != p || !c.last || v.decision != c.change->handoff->decision() || v.epoch != problem_of(*c.last).epoch.id() ||
+            !sg::net::check_signature(from.device.sign, v.statement(), v.signature))
+            return;
         for (const auto& had : c.change->votes)
             if (had.signer == v.signer) return;
         c.change->votes.push_back(v);

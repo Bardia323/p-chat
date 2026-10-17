@@ -1104,6 +1104,14 @@ int main() {
         P.app->post(pc, "and back", P.now);
         everyone({&P, &C});
         CHECK(C.said(pc).back() == "and back");
+
+        // D, which kept a copy when it left, is linked again: the chat itself takes the copy's place.
+        CHECK(pair(P, D, InviteKind::Link, "") == "ok");
+        everyone({&P, &D, &C, &Q}, 14);
+        CHECK_MSG(has(D, pc) && !D.app->left(pc) && in(C, pc, D), "D is back in the chat with C: " + P.app->describe(pc) + " | C " + C.app->describe(pc));
+        C.app->post(pc, "welcome back, desktop", C.now);
+        everyone({&P, &D, &C});
+        CHECK(!D.said(pc).empty() && D.said(pc).back() == "welcome back, desktop" && P.said(pc).back() == "welcome back, desktop");
     }
     // 21. Releases: each signature an engine Observation; a member who signs
     //     two different releases as one version is equivocation, kept in
