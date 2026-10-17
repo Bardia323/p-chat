@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.11 (2026-10-17): nothing left unsent; a new message below; right to left
+
+- A message sent into a link that had already dropped (a phone asleep)
+  and never acknowledged is sent again when the two are linked again. With
+  no relay, it used to wait forever when the other device took mail.
+- Scrolled up while something new comes in: "1 new message ↓" shows at
+  the bottom, and a tap goes to it. At the end, the list stays at the end,
+  even while pictures load.
+- The time sits at the far end of each bubble, on its last line: right for
+  a message written left to right, left for one written right to left
+  (Persian, Arabic, Hebrew), and always reads 07:25 PM. Their bubbles are
+  as wide as what they say, as yours are.
+
 ## v1.10 (2026-10-17): a device left on (sgchat_node)
 
 - `sgchat_node`: p-chat with no screen, for a computer left on. Link it

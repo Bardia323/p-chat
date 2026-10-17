@@ -1015,12 +1015,13 @@ export class Session {
           this.relinked.set(o.peer, now);
           this.app.reconnectLive(o.peer);
         }
-        if (!o.mailbox) {
-          // No mailbox: sent live again once the link is back.
-          await store.saveOutbox(o.id, { ...o, waiting: true, live: 0 });
+        const relay = this.relayOf(o.conv);
+        if (!o.mailbox || !relay?.up) {
+          // No mailbox, or no relay to leave it at now: sent live again once
+          // the link is back (and given to contacts to keep, with no relay).
+          await store.saveOutbox(o.id, { ...o, waiting: true, live: 0, held: 0, heldRelay: 0 });
           continue;
         }
-        const relay = this.relayOf(o.conv);
         if (relay?.up) {
           const r = await relay.put(o.env).catch(() => null);
           if (r?.status === STATUS.ok) await store.saveOutbox(o.id, { ...o, relayed: true });

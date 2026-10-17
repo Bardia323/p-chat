@@ -192,7 +192,7 @@ function clip(name, bytes = 64) {
 const seenMsgs = new Set(), lastUnread = new Map();
 // What became of a message: waiting here, in the mailbox, sent, delivered.
 const STATUS_MARK = { queued: '◷', mailbox: '✉', sent: '✓', delivered: '✓✓', received: '' };
-const state = { screen: 'loading', conv: null, alerts: new Map(), pairing: null, invite: null, ringing: new Map(), gameAsks: new Map(),
+const state = { screen: 'loading', conv: null, alerts: new Map(), pairing: null, invite: null, ringing: new Map(), gameAsks: new Map(), below: new Map(),
   update: null, fork: null };
 
 const ui = {
@@ -541,7 +541,7 @@ async function renderChat(first) {
   const missing = await session.missing(id);
   const tape = h('div', { class: 'tape', 'data-test': 'tape' });
   const firstLook = !seenMsgs.has(id);
-  let lastDay = '', lastSpeaker = null;
+  let lastDay = '', lastSpeaker = null, newTheirs = 0;
   for (const m of ms) {
     const d = day(m.time);
     if (d !== lastDay) { tape.append(h('div', { class: 'day' }, d)); lastDay = d; }
@@ -549,11 +549,13 @@ async function renderChat(first) {
     const k = id + '/' + m.peer + '/' + m.seq;
     const fresh = seenMsgs.has(id) && !seenMsgs.has(k);
     seenMsgs.add(k);
+    if (fresh && !m.mine) newTheirs++;
     if (info.kind === 1 && !m.mine && m.peer !== lastSpeaker) tape.append(h('div', { class: 'speaker', dir: 'auto' }, speaker(m.peer)));
     lastSpeaker = m.mine ? null : m.peer;
     if (m.type === 'file') { tape.append(fileBubble(m, fresh)); continue; }
     tape.append(h('div', { class: 'msg' + (m.mine ? ' mine' : '') + (fresh ? ' new' : ''), dir: 'auto', 'data-test': m.mine ? 'mine' : 'theirs' }, text(m.body),
-      h('span', { class: 'meta', 'data-status': m.mine ? m.status || 'sent' : null }, when(m.time), m.mine ? ' ' + STATUS_MARK[m.status || 'sent'] : '')));
+      h('span', { class: 'meta', 'data-status': m.mine ? m.status || 'sent' : null },
+        h('bdi', { dir: 'ltr' }, when(m.time), m.mine ? ' ' + STATUS_MARK[m.status || 'sent'] : ''))));
   }
   const banners = [];
   // Left when it was unlinked: a copy to read, said plainly.
@@ -752,10 +754,28 @@ async function renderChat(first) {
   drawnChat = id;
   seenMsgs.add(id);
   void firstLook;
-  // The newest in sight, unless one had scrolled up to read.
+  // The newest in sight, unless one had scrolled up to read: then what
+  // came is said below, and a tap goes to it.
+  const below = (state.below.get(id) || 0) + (atEnd ? 0 : newTheirs);
+  state.below.set(id, atEnd ? 0 : below);
+  const pill = below ? h('button', { class: 'newpill', 'data-test': 'new-below', onclick: () => {
+    tape.scrollTo({ top: tape.scrollHeight, behavior: 'smooth' });
+    state.below.set(id, 0);
+    pill.remove();
+  } }, below === 1 ? '1 new message ↓' : below + ' new messages ↓') : null;
+  if (pill) tape.append(pill);
   tape.scrollTop = atEnd ? tape.scrollHeight : was.scrollTop;
-  tape.addEventListener('scroll', () => { tape.dataset.end = tape.scrollHeight - tape.scrollTop - tape.clientHeight < 48 ? '1' : ''; });
+  tape.addEventListener('scroll', () => {
+    const end = tape.scrollHeight - tape.scrollTop - tape.clientHeight < 48;
+    tape.dataset.end = end ? '1' : '';
+    if (end && state.below.get(id)) { state.below.set(id, 0); tape.querySelector('.newpill')?.remove(); }
+  });
   tape.dataset.end = atEnd ? '1' : '';
+  // Kept at the end while pictures and stickers come in after the drawing
+  // (each makes the list taller), and once the layout has settled.
+  const stay = () => { if (tape.dataset.end === '1') tape.scrollTop = tape.scrollHeight; };
+  tape.addEventListener('load', stay, true);
+  requestAnimationFrame(stay);
 }
 
 async function pictures(fp, test) {

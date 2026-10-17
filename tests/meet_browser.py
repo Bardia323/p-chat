@@ -330,6 +330,15 @@ def parts_before(browser, url, work, phone, relays_off, meet, peer, linked, said
     wait(N, f"{said(N, nm)}.then(s => s.includes('hello-in-person-IP1'))", 30, 'a message goes phone to phone')
     N.evaluate(f"window.pchat.session.send('{nm}', 'and-back-IP2')")
     wait(M, f"{said(M, mn)}.then(s => s.includes('and-back-IP2'))", 30, 'and one back')
+    # Sent into a link that had died without saying so: not acknowledged, it
+    # is sent again once the link carries again (N takes mail; no relay).
+    N.evaluate(f"window.pchat.session.setDelivery('{nm}', true)")
+    wait(M, f"window.pchat.session.app.takesMail('{mn}', '{peer(N)}')", 30, 'Noor takes mail')
+    N.evaluate("(() => { const a = window.pchat.session.app; a.__takeLive = a.takeLive; a.takeLive = () => { a.__takeLive(); return []; }; })()")
+    M.evaluate(f"window.pchat.session.send('{mn}', 'into-a-dead-link-DL1')")
+    time.sleep(5)
+    N.evaluate("(() => { const a = window.pchat.session.app; a.takeLive = a.__takeLive; })()")
+    wait(N, f"{said(N, nm)}.then(s => s.includes('into-a-dead-link-DL1'))", 75, 'what went into a dead link is sent again, and arrives')
     # A message coming in: the chat is drawn again, but the composer is the same one,
     # not focused (no keyboard raised); the chat fits the screen and says how they are reached.
     M.evaluate(f"window.pchat.ui.screen('chat', {{conv: '{mn}'}})")
@@ -351,6 +360,31 @@ def parts_before(browser, url, work, phone, relays_off, meet, peer, linked, said
     M.click('[data-test=send]')
     wait(M, "(() => { const t = document.querySelector('.tape'); return [...t.querySelectorAll('[data-test=mine]')].some(e => e.textContent.includes('said-and-seen-SS1')) "
             "&& t.scrollHeight - t.scrollTop - t.clientHeight < 4; })()", 20, 'what was sent is in sight: the list goes to its end')
+    # Something new while reading further up: said below, and a tap goes to it.
+    for i in range(14):
+        N.evaluate(f"window.pchat.session.send('{nm}', 'filler-{i}')")
+    wait(M, "Array.from(document.querySelectorAll('[data-test=theirs]')).some(e => e.textContent.includes('filler-13'))", 30, 'many messages come in')
+    wait(M, "(() => { const t = document.querySelector('.tape'); return t.scrollHeight - t.scrollTop - t.clientHeight < 4; })()", 10,
+         'open at the end, the list stays at the end as they come')
+    M.evaluate("document.querySelector('.tape').scrollTop = 0")
+    N.evaluate(f"window.pchat.session.send('{nm}', 'while-up-there-NB1')")
+    wait(M, "document.querySelector('[data-test=new-below]')?.textContent === '1 new message ↓'", 30, 'scrolled up: a new message is said below')
+    check(M.evaluate("document.querySelector('.tape').scrollTop") < 50, 'and the list stays where it was being read')
+    M.click('[data-test=new-below]')
+    wait(M, "(() => { const t = document.querySelector('.tape'); return t.scrollHeight - t.scrollTop - t.clientHeight < 8 && !document.querySelector('[data-test=new-below]'); })()",
+         10, 'a tap goes to the end, and the note is gone')
+    # Written right to left: the time at the bubble's other end, not on the words.
+    N.evaluate(f"window.pchat.session.send('{nm}', 'سلام دوست من، این یک پیام فارسی است')")
+    N.evaluate(f"window.pchat.session.send('{nm}', 'hello my friend, this is written left to right')")
+    wait(M, "Array.from(document.querySelectorAll('[data-test=theirs]')).some(e => e.textContent.includes('left to right'))", 30, 'both come in')
+    ends = M.evaluate("""(() => {
+      const of = (t) => Array.from(document.querySelectorAll('[data-test=theirs]')).find(e => e.textContent.includes(t));
+      const side = (b) => { const r = b.getBoundingClientRect(), m = b.querySelector('.meta').getBoundingClientRect();
+        return { left: m.left - r.left, right: r.right - m.right, below: m.top >= b.firstChild.parentNode.getBoundingClientRect().top }; };
+      return { rtl: side(of('فارسی')), ltr: side(of('left to right')) }; })()""")
+    check(ends['rtl']['left'] < 20 and ends['rtl']['right'] > 40, f'right to left: the time is at the left end ({ends["rtl"]})')
+    check(ends['ltr']['right'] < 20 and ends['ltr']['left'] > 40, f'left to right: the time is at the right end ({ends["ltr"]})')
+    M.screenshot(path=str(work / 'rtl-time.png'))
     wait(M, "window.pchat.session.pairing === null", 60, 'the link made to pair is closed once their own is up')
     M.evaluate("window.pchat.ui.screen('invite', {invite: null})")
     M.click('[data-test=scan-code]')
