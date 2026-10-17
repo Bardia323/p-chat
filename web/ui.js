@@ -687,7 +687,7 @@ async function renderChat(first) {
     h('div', {}, h('h1', { 'data-test': 'chat-name', dir: 'auto' }, info.name), h('div', { class: 'sub' },
       info.kind === 2 ? (info.member ? 'Your channel' : 'Channel · read only')
         : info.kind === 1 ? info.members.length + ' devices · group' : info.members.length - 1 + (info.members.length === 2 ? ' device' : ' devices') + ' · sealed',
-      info.kind === 2 ? null : h('span', { class: 'reach', 'data-test': 'reach' }, ' · ' + { linked: 'linked', relay: 'through the relay', none: 'not reachable now' }[session.reachedBy(id)]))),
+      info.kind === 2 || info.left ? null : h('span', { class: 'reach', 'data-test': 'reach' }, ' · ' + { linked: 'linked', relay: 'through the relay', none: 'not reachable now' }[session.reachedBy(id)]))),
     info.member && info.kind !== 2 && Calls.supported() && !info.removed ? callKey(id) : null,
     info.member && info.kind === 1 && Calls.supported() && !info.removed ? callKey(id, true) : null,
     h('button', { class: 'label', 'data-test': 'devices', onclick: () => show('devices') }, 'Devices'));
