@@ -543,6 +543,9 @@ private:
     bool sibling(const std::string& peer) const;
     void pump_link();
     void pump_leaving(Conversation& c);
+    void continue_leave(Conversation& c);
+    void consider_leave(Conversation& c);
+    void apply_leave(Conversation& c, const LeaveDone& d);
     void give_chat(Conversation& c);
     void take_linked(Conversation& self, const sg::net::Observation& o, const Bytes& body);
     void take_device_ask(Conversation& c, const Member& from, const Bytes& body);

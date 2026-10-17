@@ -1065,15 +1065,22 @@ int main() {
         CHECK(pair(P, T, InviteKind::Link, "") == "ok");
         everyone({&P, &T, &C, &Q, &E}, 14);
         CHECK(has(T, pc) && has(T, qp) && has(T, pe) && has(T, pg) && in(C, pc, T));
+        // P is away all the while: T leaves with the contacts' devices alone.
         T.app->unlink(UnlinkWhat::Forget);
-        everyone({&P, &T, &C, &Q, &E}, 14);
-        CHECK(!in(C, pc, T) && !in(Q, qp, T) && P.app->linked().empty());
+        everyone({&T, &C, &Q, &E}, 14);
+        CHECK_MSG(!in(C, pc, T) && !in(Q, qp, T) && !in(E, pe, T), "T left with P away: " + C.app->describe(pc) + " | " + T.app->describe(pc));
+        everyone({&P, &T, &C, &Q, &E}, 10);
+        CHECK_MSG(!in(P, pc, T) && P.app->linked().empty(), "P, back: " + P.app->describe(pc) + " | C: " + C.app->describe(pc) + " | linked " +
+                                                                std::to_string(P.app->linked().size()));
         CHECK(T.app->removed(pc) && !T.app->left(pc) && T.heard("left", pc));
 
         // Split: a laptop linked; the two agree which chats go with which.
         CHECK(pair(P, U, InviteKind::Link, "") == "ok");
         everyone({&P, &U, &C, &Q, &E}, 14);
         CHECK(has(U, pc) && has(U, qp) && has(U, pe));
+        // Given at a generation two leaves made: the history checked back through both, all of it.
+        CHECK_MSG(texts(U, pc) == texts(P, pc), "the laptop has all that was said: " + std::to_string(texts(U, pc).size()) + " of " +
+                                                    std::to_string(texts(P, pc).size()));
         P.app->ask_split({pc, qp, pg}, {pe});
         everyone({&P, &U});
         CHECK(U.heard("split_asked") && U.app->split().state == "asking" && U.app->split().mine == std::vector<std::string>{pe});

@@ -10,6 +10,7 @@
 #include "chat/Media.hpp"
 #include "chat/Window.hpp"
 #include "sg/web/WebRtc.hpp"
+#include <algorithm>
 #include <emscripten/bind.h>
 #include <map>
 #include <emscripten/val.h>
@@ -240,6 +241,7 @@ public:
     val info(std::string c) const {
         return guard([&] {
             const auto& s = app_->state(c);
+            const auto linked_ = app_->linked();
             val o = val::object();
             o.set("name", app_->name_of(c));
             o.set("introduced", app_->introduced_as(c));
@@ -254,6 +256,8 @@ public:
             o.set("recovery", !op.no_recovery);
             o.set("disappear", double(op.disappear_s));
             o.set("recovering", app_->recovery_state(c));
+            o.set("left", app_->left(c));
+            o.set("leaving", app_->leaving(c));
             val members = val::array();
             for (const auto& m : app_->members_of(c)) {
                 val d = val::object();
@@ -261,6 +265,7 @@ public:
                 d.set("peer", hex(id));
                 d.set("side", int(m.side));
                 d.set("self", hex(id) == app_->peer());
+                d.set("linked", std::find(linked_.begin(), linked_.end(), hex(id)) != linked_.end());
                 d.set("mail", hex(id) != app_->peer() && app_->takes_mail(c, hex(id)));
                 if (const auto* e = s.find(sg::Key(device_element(id)))) {
                     Window w{std::uint64_t(e->params.get_or<std::int64_t>("high", 0)),
@@ -497,6 +502,47 @@ public:
         return out;
     }
     void forget_said(std::string c, double seq) { guard([&] { app_->forget_said(c, std::uint64_t(seq)); return 0; }); }
+    // Linked devices (protocol 11).
+    std::string self_conversation() const { return app_->self_conversation(); }
+    val linked() const {
+        val out = val::array();
+        for (const auto& p : app_->linked()) out.call<void>("push", p);
+        return out;
+    }
+    void set_relay(std::string c, std::string url) { guard([&] { app_->set_relay(c, url); return 0; }); }
+    void give_history(std::string c, std::string peer, val items) {
+        guard([&] {
+            std::vector<HistoryItem> hs;
+            for (unsigned i = 0; i < items["length"].as<unsigned>(); ++i)
+                hs.push_back({observation_from(bytes(items[i]["obs"])), key(items[i]["key"])});
+            app_->give_history(c, peer, hs);
+            return 0;
+        });
+    }
+    void unlink(int what) { guard([&] { app_->unlink(UnlinkWhat(what == 1 ? 1 : 2)); return 0; }); }
+    void ask_split(val mine, val theirs) {
+        guard([&] {
+            std::vector<std::string> a, b;
+            for (unsigned i = 0; i < mine["length"].as<unsigned>(); ++i) a.push_back(mine[i].as<std::string>());
+            for (unsigned i = 0; i < theirs["length"].as<unsigned>(); ++i) b.push_back(theirs[i].as<std::string>());
+            app_->ask_split(a, b);
+            return 0;
+        });
+    }
+    void agree_split() { guard([&] { app_->agree_split(); return 0; }); }
+    void refuse_split() { guard([&] { app_->refuse_split(); return 0; }); }
+    val split() const {
+        const auto v = app_->split();
+        val o = val::object();
+        o.set("state", v.state);
+        o.set("with", v.with);
+        val mine = val::array(), theirs = val::array();
+        for (const auto& id : v.mine) mine.call<void>("push", id);
+        for (const auto& id : v.theirs) theirs.call<void>("push", id);
+        o.set("mine", mine);
+        o.set("theirs", theirs);
+        return o;
+    }
     void share_history(std::string c, std::string peer, val items) {
         guard([&] {
             std::vector<HistoryItem> hs;
@@ -559,6 +605,7 @@ public:
             o.set("why", r.why);
             o.set("own", u8(r.own));
             o.set("dh", u8(r.dh));
+            o.set("peer", r.peer);
             return o;
         });
     }
@@ -939,6 +986,15 @@ EMSCRIPTEN_BINDINGS(sgchat) {
         .function("sendMedia", &WebApp::send_media)
         .function("takeMedia", &WebApp::take_media)
         .function("shareHistory", &WebApp::share_history)
+        .function("selfConversation", &WebApp::self_conversation)
+        .function("linked", &WebApp::linked)
+        .function("setRelay", &WebApp::set_relay)
+        .function("giveHistory", &WebApp::give_history)
+        .function("unlink", &WebApp::unlink)
+        .function("askSplit", &WebApp::ask_split)
+        .function("agreeSplit", &WebApp::agree_split)
+        .function("refuseSplit", &WebApp::refuse_split)
+        .function("split", &WebApp::split)
         .function("ask", &WebApp::ask)
         .function("takeAccept", &WebApp::take_accept)
         .function("open", &WebApp::open)

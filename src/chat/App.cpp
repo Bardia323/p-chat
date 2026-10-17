@@ -165,8 +165,32 @@ struct App::Conversation {
     bool chain_older = false;
     // Asked of the owner's side, and when (a device_ask, said again in a while).
     std::map<std::string, std::uint64_t> asked;
-    // The owner's side: devices its members asked to add or take out, in turn.
-    std::deque<DeviceAsk> asks;
+    // The owner's side: devices to add (its members asked) or take out (one
+    // that left the link), in turn.
+    struct Ask {
+        bool add = true;
+        Member member;
+    };
+    std::deque<Ask> asks;
+    // This device leaving it of its own accord (Link.hpp): the decision, its
+    // endorsements so far, and when it was asked.
+    struct Going {
+        Leave leave;
+        std::vector<sg::net::Attestation> votes;
+        std::uint64_t at = 0;
+    };
+    std::optional<Going> going;
+    // Another member's leave, asked of this device and not endorsed yet (its
+    // history was behind), and the last one endorsed.
+    std::optional<std::pair<Leave, std::string>> leave_asked;
+    sg::net::Digest leave_voted{};
+    // The leave that made the generation it is at (encoded LeaveDone), and
+    // every leave its lineage passed through (encoded Leave), oldest first.
+    Bytes join_leave;
+    std::vector<Bytes> leaves;
+    // Linked devices that left it of their own accord while linked to this
+    // one ("<self conversation>:<device>"): not brought back into it.
+    std::set<std::string> parted;
     // The self conversation's: devices that said they left the link, and a
     // split of the chats under way.
     std::set<std::string> unlinked;
@@ -456,6 +480,10 @@ Bytes App::save(const std::string& id) const {
             for (const auto& id : *list) w.short_text(id);
         }
     }
+    w.long_bytes(c.join_leave, 1 << 22).u16(std::uint16_t(c.leaves.size()));
+    for (const auto& l : c.leaves) w.long_bytes(l, 1 << 22);
+    w.u16(std::uint16_t(c.parted.size()));
+    for (const auto& p : c.parted) w.short_text(p);
     return w.take();
 }
 
@@ -589,6 +617,11 @@ void App::load(const Bytes& record) {
             }
             c.split = std::move(sp);
         }
+        c.join_leave = r.long_bytes(1 << 22);
+        const auto nl = r.u16();
+        for (unsigned i = 0; i < nl; ++i) c.leaves.push_back(r.long_bytes(1 << 22));
+        const auto np = r.u16();
+        for (unsigned i = 0; i < np; ++i) c.parted.insert(r.short_text(256));
     }
     r.end();
     // The agreement as it was left: its predecessor, its next tick and the
@@ -717,6 +750,7 @@ void App::pump(std::uint64_t now_ms) {
             }
         }
         pump_leaving(*c);
+        consider_leave(*c);
     }
     pump_link();
     pump_calls();
@@ -1481,6 +1515,38 @@ void App::control(Conversation& c, const Member& from, const ControlFrame& f) {
             } catch (const std::exception&) {
             }
         }
+        return;
+    }
+    case Control::LeaveAsk: {
+        Reader r(f.body);
+        const auto l = decode_leave(r);
+        const auto vote = decode_attestation(r);
+        r.end();
+        if (l.conversation != c.id || l.generation != c.generation + 1 || l.leaving != device_id(from.device) || vote.signer != p ||
+            vote.decision != l.decision() || vote.epoch != l.epoch() || !sg::net::check_signature(from.device.sign, vote.statement(), vote.signature))
+            return;
+        c.leave_asked = {l, p};
+        consider_leave(c);
+        return;
+    }
+    case Control::LeaveVote: {
+        if (!c.going) return;
+        Reader r(f.body);
+        const auto v = decode_attestation(r);
+        r.end();
+        if (v.signer != p || v.decision != c.going->leave.decision() || v.epoch != c.going->leave.epoch() ||
+            !sg::net::check_signature(from.device.sign, v.statement(), v.signature))
+            return;
+        for (const auto& had : c.going->votes)
+            if (had.signer == v.signer) return;
+        c.going->votes.push_back(v);
+        continue_leave(c);
+        return;
+    }
+    case Control::LeaveDone: {
+        const auto d = decode_leave_done(f.body);
+        if (d.leave.conversation != c.id || !leave_holds(d.leave, c.committee, d.endorsements)) return;
+        apply_leave(c, d);
         return;
     }
     case Control::LinkHave:
@@ -3944,8 +4010,11 @@ void App::pump_link() {
         bool lowest = true;
         for (const auto& m : sibs) {
             const auto p = peer_of(m.device);
-            if (!c.member(p)) missing.push_back(m);
-            else if (p < peer_) lowest = false;
+            if (!c.member(p)) {
+                if (!c.parted.count(self_conv()->hexid + ":" + p)) missing.push_back(m);
+            } else if (p < peer_) {
+                lowest = false;
+            }
         }
         if (missing.empty() || !lowest || c.change || c.pending) continue;
         for (auto& m : missing) m.side = c.side;
@@ -3963,31 +4032,162 @@ void App::pump_link() {
             auto& at = c.asked[peer_of(m.device)];
             if (at && now_ < at + 600000) continue;
             at = std::max<std::uint64_t>(now_, 1);
-            post_kind(c, "device_ask", encode(DeviceAsk{true, m}));
+            post_kind(c, "device_ask", encode(DeviceAsk{m}));
         }
     }
 }
 
-// Leaving a chat (unlinked): taken out by handoff - proposed here on the
-// owner's side, asked of the owner's side on the other - while a device of
-// this person stays in it.
+// Leaving a chat (unlinked): a decision of this device's own, endorsed by
+// the committee's quorum (Link.hpp) - no proposer needed, so it works with
+// this person's other devices away. Asked again in two minutes if nothing
+// came of it (its history may have moved on meanwhile).
 void App::pump_leaving(Conversation& c) {
-    if (!c.leaving || c.removed || !member_here(c.hexid)) return;
-    const auto* me = c.member(peer_);
-    if (c.side == Side::Owner) {
-        if (c.change || c.pending) return;
-        try {
-            begin_change(c, false, {*me});
-        } catch (const std::exception& e) {
-            notices_.push_back({"warning", c.hexid, "", std::string("this device could not leave: ") + e.what()});
-            c.leaving = false;
-        }
+    if (!c.leaving || c.removed || !member_here(c.hexid) || c.kind == Kind::Channel || !c.agreement) return;
+    if (c.change || c.pending || c.proposing) return;
+    if (c.going && now_ < c.going->at + 120000) return;
+    Leave l;
+    l.conversation = c.id;
+    l.generation = c.generation + 1;
+    l.leaving = id_;
+    l.previous = c.agreement->previous();
+    l.tick = c.agreement->next_tick();
+    l.tail = encode(history_of(c.log, c.cutoffs));
+    c.going = Conversation::Going{l, {}, std::max<std::uint64_t>(now_, 1)};
+    auto vote = leave_endorsement(l, peer_);
+    sign(vote.statement(), [this, cid = c.hexid, vote](const sg::net::Signature& s) mutable {
+        if (!conversations_.count(cid)) return;
+        auto& c = conv(cid);
+        if (!c.going || c.going->leave.decision() != vote.decision) return;
+        vote.signature = s;
+        c.going->votes.push_back(vote);
+        send_control(c, Control::LeaveAsk, Writer().raw(encode(c.going->leave)).raw(encode(vote)).take());
+        continue_leave(c);
+    });
+}
+void App::continue_leave(Conversation& c) {
+    if (!c.going || !leave_holds(c.going->leave, c.committee, c.going->votes)) return;
+    LeaveDone d;
+    d.leave = c.going->leave;
+    d.endorsements = c.going->votes;
+    for (const auto& m : c.members)
+        if (!(device_id(m.device) == id_)) d.members.push_back(m);
+    d.left = *c.member(peer_);
+    // Every member is told; the one leaving takes it as they do.
+    send_control(c, Control::LeaveDone, encode(d));
+    apply_leave(c, d);
+}
+// Another member leaves: endorsed once its history since the last epoch is
+// this device's too (behind: not yet; differs: shown, never endorsed), while
+// no other change is sealed, and never leaving a side of a two-sided chat empty.
+void App::consider_leave(Conversation& c) {
+    if (!c.leave_asked || c.removed || !c.agreement) return;
+    const auto [l, asker] = *c.leave_asked;
+    if (l.generation != c.generation + 1 || !c.member(asker)) {
+        c.leave_asked.reset();
         return;
     }
-    auto& at = c.asked[peer_];
-    if (at && now_ < at + 600000) return;
-    at = std::max<std::uint64_t>(now_, 1);
-    post_kind(c, "device_ask", encode(DeviceAsk{false, *me}));
+    if ((c.change && c.change->endorsed) || c.pending || c.leave_voted == l.decision()) return;
+    if (l.previous != c.agreement->previous() || l.tick != c.agreement->next_tick()) return;  // asked again when it has moved on
+    const auto* leaver = c.member(asker);
+    if (c.kind == Kind::Direct) {
+        bool other = false;
+        for (const auto& m : c.members) other |= m.side == leaver->side && peer_of(m.device) != asker;
+        if (!other) {
+            c.leave_asked.reset();
+            return;
+        }
+    }
+    switch (compare(decode_history(l.tail), c.log, c.cutoffs)) {
+    case Agrees::Same: break;
+    case Agrees::Behind: return;
+    case Agrees::Differs:
+        c.leave_asked.reset();
+        notices_.push_back({"history_differs", c.hexid, asker, "A device leaving names a history that differs from this device's."});
+        return;
+    }
+    c.leave_voted = l.decision();
+    c.leave_asked.reset();
+    auto vote = leave_endorsement(l, peer_);
+    sign(vote.statement(), [this, cid = c.hexid, vote, asker](const sg::net::Signature& s) mutable {
+        if (!conversations_.count(cid)) return;
+        vote.signature = s;
+        send_control(conv(cid), Control::LeaveVote, encode(vote), asker);
+    });
+}
+// A leave endorsed: the device out of the committee, the generation on, the
+// history's lineage started again from the decision (the tail it names is
+// agreed), its keys turned.
+void App::apply_leave(Conversation& c, const LeaveDone& d) {
+    const auto& l = d.leave;
+    if (l.generation != c.generation + 1) return;
+    const auto gone = hex(l.leaving);
+    const auto* left = c.member(gone);
+    if (!left || !(left->device == d.left.device)) return;
+    std::vector<Member> next;
+    for (const auto& m : c.members)
+        if (peer_of(m.device) != gone) next.push_back(m);
+    {
+        std::set<std::string> a, b;
+        for (const auto& m : next) a.insert(peer_of(m.device));
+        for (const auto& m : d.members) b.insert(peer_of(m.device));
+        if (a != b) return;
+    }
+    const Member out = *left;
+    set_members(c, l.generation, next);
+    const auto persist = [this, cid = c.hexid](const Bytes& b) { persist_agreement(conv(cid), b); };
+    c.agreement = std::make_unique<sg::net::Agreement>(c.committee, l.decision(), std::max<std::uint64_t>(l.tick, 1), persist, region_of(c.id));
+    c.journal = c.agreement->snapshot();
+    c.cutoffs = cutoffs_after(c.cutoffs, decode_history(l.tail));
+    for (const auto& i : decode_history(l.tail).ids) c.agreed_ids.insert(i);
+    c.run.reset();
+    c.early.clear();
+    c.change.reset();
+    c.going.reset();
+    c.leave_asked.reset();
+    c.join_leave = encode(d);
+    c.leaves.push_back(encode(l));
+    c.epoch_day = day_;
+    dirty_.insert(c.hexid);
+    if (l.leaving == id_) {
+        c.removed = true;
+        const bool was_leaving = c.leaving;
+        c.leaving = false;
+        if (was_leaving) notices_.push_back({"left", c.hexid, "", ""});
+        return;
+    }
+    // A linked device that left is not brought back into it while this link lasts.
+    if (const auto* s = self_conv(); s && s->member(gone)) c.parted.insert(s->hexid + ":" + gone);
+    engine_->send("contacts", {"device.revoke", devices_args(c.id, {out}, l.generation)});
+    settle();
+    c.ratchets.erase(gone);
+    c.held.erase(gone);
+    c.their_keys.erase(gone);
+    notices_.push_back({"revoked", c.hexid, gone, ""});
+    // What this device said after the tail is said again under the next generation.
+    for (const auto& [seq, m] : c.mine) {
+        const auto found = c.cutoffs.find(id_);
+        if (found != c.cutoffs.end() && seq <= found->second) continue;
+        auto o = make_message(c.id, c.generation, id_, seq, m.kind);
+        const auto ck = random_key();
+        o.payload = seal_content(ck, random_nonce(), o, Content{m.time, m.body});
+        sign(o.statement(), [this, cid = c.hexid, o, ck](const sg::net::Signature& s) mutable {
+            if (!conversations_.count(cid)) return;
+            auto& c = conv(cid);
+            o.signature = s;
+            if (o.tick != c.generation) return;
+            c.log.push_back(o);
+            c.integrity->receive(o, c.context(), c.generation);
+            send_message(c, o, ck);
+        });
+    }
+    if (c.kind == Kind::Group && member_here(c.hexid)) ensure_sender_key(c, true);
+    // The device that left knew the secret: the owner's side's lowest device turns it.
+    if (c.side == Side::Owner) {
+        bool lowest = true;
+        for (const auto& m : next)
+            if (m.side == Side::Owner && peer_of(m.device) < peer_) lowest = false;
+        if (lowest) post_kind(c, "rekey", encode(RekeyBody{random_key(), c.secrets.back().generation + 1}));
+    }
 }
 
 // A chat, given to this person's linked devices over the self conversation.
@@ -4019,12 +4219,18 @@ void App::give_chat(Conversation& c) {
             if (!key) key = {p, k.key};
         if (!key) return;
         l.trust = Writer().u8(2).short_bytes(encode(key->second)).raw(key_from_hex(key->first)).take();
-    } else if (!c.join_ask.empty()) {
+    } else if (!c.join_ask.empty() && decode_handoff_ask(c.join_ask).handoff.next.generation == c.generation) {
         const auto ask = decode_handoff_ask(c.join_ask);
         l.generation = ask.handoff.next.generation;
         l.members = ask.next;
         l.before = c.join_before;
         l.trust = Writer().u8(1).long_bytes(c.join_last, 1 << 22).long_bytes(encode(ask.handoff), 1 << 22).take();
+    } else if (!c.join_leave.empty() && decode_leave_done(c.join_leave).leave.generation == c.generation) {
+        // Made by a device's leave: the endorsed decision, checked against
+        // the committee it left (these members and the one that left).
+        l.generation = c.generation;
+        l.members = c.members;
+        l.trust = Writer().u8(3).long_bytes(c.join_leave, 1 << 22).take();
     } else if (c.generation == 0) {
         l.generation = 0;
         l.members = c.members;
@@ -4079,8 +4285,30 @@ void App::take_linked(Conversation& self, const sg::net::Observation& o, const B
         notices_.push_back({"warning", "", o.peer, "A chat given by a linked device that is not in it was refused."});
         return;
     }
+    std::optional<LeaveDone> by_leave;
+    if (!l.trust.empty() && l.trust[0] == 3) {
+        try {
+            Reader r(l.trust);
+            r.u8();
+            by_leave = decode_leave_done(r.long_bytes(1 << 22));
+            r.end();
+        } catch (const std::exception&) {
+            return;
+        }
+        auto before = l.members;
+        before.push_back(by_leave->left);
+        std::set<std::string> a, b;
+        for (const auto& m : l.members) a.insert(peer_of(m.device));
+        for (const auto& m : by_leave->members) b.insert(peer_of(m.device));
+        if (a != b || by_leave->leave.conversation != l.conversation || by_leave->leave.generation != l.generation ||
+            !leave_holds(by_leave->leave, committee_of(l.conversation, l.generation - 1, before, l.kind == Kind::Group), by_leave->endorsements)) {
+            notices_.push_back({"warning", "", o.peer, "A chat given by a linked device was refused: its leave is not endorsed."});
+            return;
+        }
+    }
     Resumed resumed;
-    if (!l.trust.empty()) {
+    if (by_leave) {
+    } else if (!l.trust.empty()) {
         if (l.trust[0] != 1) return;
         resumed = resume_from(l.trust, l.conversation, l.generation, l.before, l.members, l.kind == Kind::Group);
         if (!resumed.why.empty()) {
@@ -4095,6 +4323,22 @@ void App::take_linked(Conversation& self, const sg::net::Observation& o, const B
     const std::optional<Finalized> head = resumed.last;
     adopt(c, std::move(resumed));
     c.epoch_day = day_;
+    if (by_leave) {
+        // The leave's decision is where its lineage starts again; the history
+        // it names is agreed, and the epochs before it are asked for.
+        const auto& lv = by_leave->leave;
+        const auto persist = [this, cid = c.hexid](const Bytes& b) { persist_agreement(conv(cid), b); };
+        c.agreement = std::make_unique<sg::net::Agreement>(c.committee, lv.decision(), std::max<std::uint64_t>(lv.tick, 1), persist,
+                                                           region_of(c.id));
+        c.journal = c.agreement->snapshot();
+        const auto tail = decode_history(lv.tail);
+        c.cutoffs = cutoffs_after({}, tail);
+        for (const auto& i : tail.ids) c.agreed_ids.insert(i);
+        c.leaves.push_back(encode(lv));
+        c.join_leave = encode(*by_leave);
+        c.chain_expect = lv.previous;
+        c.chain_older = c.chain_expect != sg::net::Digest{};
+    }
     if (head) {
         // The epoch the handoff extends is agreed; those before it are asked
         // for, each checked against the one after it.
@@ -4123,30 +4367,20 @@ void App::take_linked(Conversation& self, const sg::net::Observation& o, const B
     send_have(o.peer, {id});
 }
 
-// A member asks the owner's side to change its own devices: a device linked
-// to it, added on its side; or itself, taken out. Taken in turn by the owner's
-// side's proposer (pump), by handoff - which the old quorum endorses as ever.
+// A member asks the owner's side to add a device linked to it, on its side.
+// Taken in turn by the owner's side's proposer (pump), by handoff - which the
+// old quorum endorses as ever.
 void App::take_device_ask(Conversation& c, const Member& from, const Bytes& body) {
     const auto a = decode_device_ask(body);
     if (c.side != Side::Owner || c.kind == Kind::Channel || c.removed || !member_here(c.hexid)) return;
     auto m = a.member;
-    if (a.add) {
-        if (c.member(peer_of(m.device))) return;
-        m.side = from.side;
-    } else {
-        // Only itself: a member leaves; it does not take out another.
-        if (!(m.device == from.device)) return;
-        m = from;
-        // A side of two is not left empty: that is the chat ending, not a device leaving it.
-        bool other = false;
-        for (const auto& x : c.members) other |= x.side == from.side && !(x.device == from.device);
-        if (!other) return;
-    }
+    if (c.member(peer_of(m.device))) return;
+    m.side = from.side;
     for (const auto& had : c.asks)
-        if (had.add == a.add && had.member.device == m.device) return;
+        if (had.add && had.member.device == m.device) return;
     if (c.asks.size() >= 64) return;
-    c.asks.push_back({a.add, m});
-    notices_.push_back({a.add ? "device_asked" : "device_leaving", c.hexid, peer_of(from.device), peer_of(m.device)});
+    c.asks.push_back({true, m});
+    notices_.push_back({"device_asked", c.hexid, peer_of(from.device), peer_of(m.device)});
 }
 
 // What a linked device says of the link: it left it (forgetting or keeping
@@ -4169,7 +4403,7 @@ void App::take_unlink(Conversation& self, const Member& from, const Bytes& body)
         // The link was the two of them: it is over. More stay linked: it goes
         // out of their self conversation by handoff.
         if (siblings().empty()) end_link("unlinked");
-        else if (self.side == Side::Owner && proposer_of(self.members) == peer_ && !self.change) {
+        else if (self.side == Side::Owner && proposer_of(self.members) == peer_) {
             const auto* m = self.member(p);
             if (m) self.asks.push_back({false, *m});
         }
@@ -4380,10 +4614,15 @@ void App::take_have(Conversation& self, const Member& from, const Bytes& body) {
         }
         std::reverse(older.begin(), older.end());
         std::optional<HandoffAsk> handoff;
-        if (ch.generation + 1 == c.generation && !c.join_ask.empty()) handoff = decode_handoff_ask(c.join_ask);
+        std::optional<LeaveDone> left;
+        if (ch.generation + 1 == c.generation && !c.join_ask.empty() && decode_handoff_ask(c.join_ask).handoff.next.generation == c.generation)
+            handoff = decode_handoff_ask(c.join_ask);
+        else if (ch.generation + 1 == c.generation && !c.join_leave.empty() && decode_leave_done(c.join_leave).leave.generation == c.generation)
+            left = decode_leave_done(c.join_leave);
         const auto send = [&](std::vector<Bytes> list, bool with_handoff) {
             LinkEpochs le;
             le.conversation = c.id;
+            if (ch.older) le.leaves = c.leaves;  // the bridges between lineages, going back
             std::size_t size = 0;
             for (auto& e : list) {
                 if (size + e.size() > 180000 && !le.epochs.empty()) {
@@ -4394,11 +4633,14 @@ void App::take_have(Conversation& self, const Member& from, const Bytes& body) {
                 size += e.size();
                 le.epochs.push_back(std::move(e));
             }
-            if (with_handoff) le.handoff = handoff;
-            if (!le.epochs.empty() || le.handoff) send_control(self, Control::LinkEpochs, encode(le), p);
+            if (with_handoff) {
+                le.handoff = handoff;
+                le.left = left;
+            }
+            if (!le.epochs.empty() || le.handoff || le.left || !le.leaves.empty()) send_control(self, Control::LinkEpochs, encode(le), p);
         };
-        if (!older.empty()) send(older, false);
-        if (!newer.empty() || handoff) send(newer, handoff.has_value());
+        if (!older.empty() || (ch.older && !c.leaves.empty())) send(older, false);
+        if (!newer.empty() || handoff || left) send(newer, true);
         // The messages it lacks, by sender and sequence.
         std::string wants;
         std::set<std::pair<std::string, std::uint64_t>> seen;
@@ -4425,9 +4667,20 @@ void App::take_epochs(Conversation& self, const Member& from, const Bytes& body)
     auto& c = *found->second;
     std::vector<Finalized> fs;
     for (const auto& b : e.epochs) try { fs.push_back(decode_finalized(b)); } catch (const std::exception&) {}
+    std::vector<Leave> ls;
+    for (const auto& b : e.leaves) try { Reader r(b); ls.push_back(decode_leave(r)); r.end(); } catch (const std::exception&) {}
     const auto take = [&] {
         for (bool moved = true; moved;) {
             moved = false;
+            // A leave whose decision the history going back stops at: its
+            // tail is agreed, and the history goes on back from the epoch it names.
+            for (const auto& l : ls)
+                if (c.chain_older && l.conversation == c.id && l.decision() == c.chain_expect) {
+                    for (const auto& i : decode_history(l.tail).ids) c.agreed_ids.insert(i);
+                    c.chain_expect = l.previous;
+                    c.chain_older = c.chain_expect != sg::net::Digest{} && c.chain_expect != c.chain_root;
+                    moved = true;
+                }
             for (const auto& f : fs) {
                 if (c.chain_older && epoch_before(f, c.chain_expect)) {
                     for (const auto& i : decode_history(f.statement.payload).ids) c.agreed_ids.insert(i);
@@ -4449,6 +4702,10 @@ void App::take_epochs(Conversation& self, const Member& from, const Bytes& body)
             apply_handoff(c, h, e.handoff->next);
             take();
         }
+    }
+    if (e.left && e.left->leave.conversation == c.id && leave_holds(e.left->leave, c.committee, e.left->endorsements)) {
+        apply_leave(c, *e.left);
+        take();
     }
     dirty_.insert(c.hexid);
 }

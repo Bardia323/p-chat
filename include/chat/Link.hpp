@@ -34,7 +34,8 @@ namespace chat {
 //   | long(trust) | u8 m | m x member (before) | u8 no_recovery | u32 disappear_s
 // trust: empty at generation 0 (the linked device was in it from its start);
 // u8 1 | long(Finalized) | long(Handoff), the handoff that brought it in, as
-// a further device's accept; u8 2 | short(sender key) | device id(32), a
+// a further device's accept; u8 3 | long(LeaveDone), a device's leave that
+// made the generation; u8 2 | short(sender key) | device id(32), a
 // channel to read: its key from now on, and the publisher's device that speaks under it.
 struct LinkedChat {
     ConversationId conversation{};
@@ -53,11 +54,9 @@ struct LinkedChat {
 Bytes encode(const LinkedChat& l);
 LinkedChat decode_linked_chat(const Bytes& b);
 
-// A member asks the owner's side to change its own devices (type
-// `device_ask`, in the chat): to add a device linked to it, on its side, or
-// to take itself out (it is leaving).  u8 11 | u8 add | sign | agree | u8 flags
+// A member asks the owner's side to add a device linked to it, on its side
+// (type `device_ask`, in the chat).  u8 11 | sign | agree | u8 flags
 struct DeviceAsk {
-    bool add = true;
     Member member;
 };
 Bytes encode(const DeviceAsk& a);
@@ -106,13 +105,55 @@ LinkHave decode_link_have(const Bytes& b);
 std::map<Key32, Runs> runs_of(const std::vector<sg::net::Observation>& log);
 bool holds(const std::map<Key32, Runs>& held, const Key32& sender, std::uint64_t sequence);
 
+// A device leaves a chat of its own accord (unlinked): a decision of its
+// own, endorsed by the committee's quorum - the device itself among them -
+// as a handoff would be, but needing no proposer: each endorser checks the
+// history since the last epoch (the tail) against its own log, as for a
+// recovery. The history's lineage then starts again from the decision,
+// which names the epoch before it (`previous`) and the tail.
+//   leave    = u8 11 | conversation(16) | u64 generation (the one it makes) | leaving device id
+//              | previous(32) | u64 tick (the next) | long(tail)
+//   decision = H(D("sg.chat.v11.leave") | leave)
+//   epoch    = H(D("sg.chat.v11.leave.epoch") | conversation | u64 generation)
+struct Leave {
+    ConversationId conversation{};
+    std::uint64_t generation = 0;
+    Key32 leaving{};
+    sg::net::Digest previous{};
+    std::uint64_t tick = 0;
+    Bytes tail;  // an encoded History
+    sg::net::Digest decision() const;
+    sg::net::Digest epoch() const;
+};
+Bytes encode(const Leave& l);
+Leave decode_leave(Reader& r);
+sg::net::Attestation leave_endorsement(const Leave& l, const std::string& peer);  // unsigned
+// Endorsed: distinct members of `committee` (the one it leaves), by their
+// own keys, the leaving device among them, at least the committee's quorum.
+bool leave_holds(const Leave& l, const sg::net::Committee& committee, const std::vector<sg::net::Attestation>& endorsements);
+// A leave, endorsed: what each member applies, and a device given the chat
+// at the generation it made takes up.
+//   leave | u16 n | n x attestation | u8 m | m x member (the committee it makes) | member (the one that left)
+struct LeaveDone {
+    Leave leave;
+    std::vector<sg::net::Attestation> endorsements;
+    std::vector<Member> members;
+    Member left;
+};
+Bytes encode(const LeaveDone& d);
+LeaveDone decode_leave_done(const Bytes& b);
+
 // A chat's finalized epochs a linked device lacks (control 14, LinkEpochs),
-// and the handoff to the generation it is in, when it is one behind.
-//   u8 11 | conversation(16) | u16 n | n x long(Finalized) | u8 h | (h = 1: long(HandoffAsk), endorsed)
+// the leaves its lineage passed through (each names the epoch before it),
+// and what made the generation it is in, when it is one behind.
+//   u8 11 | conversation(16) | u16 n | n x long(Finalized) | u16 b | b x long(leave)
+//   | u8 h | (h = 1: long(HandoffAsk), endorsed; h = 2: long(LeaveDone))
 struct LinkEpochs {
     ConversationId conversation{};
     std::vector<Bytes> epochs;  // encoded Finalized
+    std::vector<Bytes> leaves;  // encoded Leave
     std::optional<HandoffAsk> handoff;
+    std::optional<LeaveDone> left;
 };
 Bytes encode(const LinkEpochs& e);
 LinkEpochs decode_link_epochs(const Bytes& b);
@@ -125,6 +166,7 @@ struct LinkHistory {
 };
 Bytes encode(const LinkHistory& h);
 LinkHistory decode_link_history(const Bytes& b);
+
 
 // The agreed history going back from a known epoch: the earlier epoch, if it
 // is the one `expect` names and its checkpoint is its own; refused otherwise.

@@ -1,6 +1,7 @@
 #include "chat/Link.hpp"
 #include "chat/Crypto.hpp"
 #include <algorithm>
+#include <set>
 
 namespace chat {
 
@@ -84,7 +85,7 @@ LinkedChat decode_linked_chat(const Bytes& b) {
 
 Bytes encode(const DeviceAsk& a) {
     Writer w;
-    w.u8(link_version).u8(a.add ? 1 : 0);
+    w.u8(link_version);
     member_out(w, a.member);
     return w.take();
 }
@@ -92,12 +93,63 @@ DeviceAsk decode_device_ask(const Bytes& b) {
     Reader r(b);
     version_in(r);
     DeviceAsk a;
-    const auto add = r.u8();
-    if (add > 1) throw Refused("chat: a device is added or taken out");
-    a.add = add == 1;
     a.member = member_in(r);
     r.end();
     return a;
+}
+
+Bytes encode(const Leave& l) {
+    return Writer().u8(link_version).raw(l.conversation).u64(l.generation).raw(l.leaving).raw(l.previous).u64(l.tick)
+        .long_bytes(l.tail, 1 << 20).take();
+}
+Leave decode_leave(Reader& r) {
+    version_in(r);
+    Leave l;
+    l.conversation = r.fixed<16>();
+    l.generation = r.u64();
+    l.leaving = r.key();
+    l.previous = r.key();
+    l.tick = r.u64();
+    l.tail = r.long_bytes(1 << 20);
+    decode_history(l.tail);  // refused here if it does not read
+    return l;
+}
+sg::net::Digest Leave::decision() const { return blake2b256(Bytes{}, Writer("sg.chat.v11.leave").raw(encode(*this)).data()); }
+sg::net::Digest Leave::epoch() const {
+    return blake2b256(Bytes{}, Writer("sg.chat.v11.leave.epoch").raw(conversation).u64(generation).data());
+}
+sg::net::Attestation leave_endorsement(const Leave& l, const std::string& peer) { return {l.epoch(), l.decision(), peer, {}}; }
+bool leave_holds(const Leave& l, const sg::net::Committee& committee, const std::vector<sg::net::Attestation>& ends) {
+    if (l.generation != committee.generation + 1 || !committee.key(hex(l.leaving))) return false;
+    std::set<std::string> signers;
+    for (const auto& a : ends) {
+        const auto* key = committee.key(a.signer);
+        if (!key || a.epoch != l.epoch() || a.decision != l.decision() || !signers.insert(a.signer).second ||
+            !sg::net::check_signature(*key, a.statement(), a.signature))
+            return false;
+    }
+    return signers.count(hex(l.leaving)) && signers.size() >= committee.quorum;
+}
+Bytes encode(const LeaveDone& d) {
+    Writer w;
+    w.raw(encode(d.leave)).u16(std::uint16_t(d.endorsements.size()));
+    for (const auto& a : d.endorsements) w.raw(encode(a));
+    members_out(w, d.members);
+    member_out(w, d.left);
+    return w.take();
+}
+LeaveDone decode_leave_done(const Bytes& b) {
+    Reader r(b);
+    LeaveDone d;
+    d.leave = decode_leave(r);
+    const auto n = r.u16();
+    if (n > 256) throw Refused("chat: too many endorsements");
+    for (unsigned i = 0; i < n; ++i) d.endorsements.push_back(decode_attestation(r));
+    d.members = members_in(r);
+    if (d.members.empty()) throw Refused("chat: a committee has members");
+    d.left = member_in(r);
+    r.end();
+    return d;
 }
 
 Bytes encode(const Unlink& u) {
@@ -222,10 +274,14 @@ bool holds(const std::map<Key32, Runs>& held, const Key32& sender, std::uint64_t
 Bytes encode(const LinkEpochs& e) {
     if (e.epochs.size() > 4096) throw Refused("chat: too many epochs at once");
     Writer w;
+    if (e.leaves.size() > 4096 || (e.handoff && e.left)) throw Refused("chat: epochs out of bounds");
     w.u8(link_version).raw(e.conversation).u16(std::uint16_t(e.epochs.size()));
     for (const auto& f : e.epochs) w.long_bytes(f, 1 << 20);
-    w.u8(e.handoff ? 1 : 0);
+    w.u16(std::uint16_t(e.leaves.size()));
+    for (const auto& l : e.leaves) w.long_bytes(l, 1 << 20);
+    w.u8(e.handoff ? 1 : e.left ? 2 : 0);
     if (e.handoff) w.long_bytes(encode(*e.handoff), 1 << 20);
+    if (e.left) w.long_bytes(encode(*e.left), 1 << 20);
     return w.take();
 }
 LinkEpochs decode_link_epochs(const Bytes& b) {
@@ -236,9 +292,13 @@ LinkEpochs decode_link_epochs(const Bytes& b) {
     const auto n = r.u16();
     if (n > 4096) throw Refused("chat: too many epochs at once");
     for (unsigned i = 0; i < n; ++i) e.epochs.push_back(r.long_bytes(1 << 20));
+    const auto nl = r.u16();
+    if (nl > 4096) throw Refused("chat: too many leaves at once");
+    for (unsigned i = 0; i < nl; ++i) e.leaves.push_back(r.long_bytes(1 << 20));
     const auto h = r.u8();
-    if (h > 1) throw Refused("chat: a handoff or none");
-    if (h) e.handoff = decode_handoff_ask(r.long_bytes(1 << 20));
+    if (h > 2) throw Refused("chat: a handoff, a leave or none");
+    if (h == 1) e.handoff = decode_handoff_ask(r.long_bytes(1 << 20));
+    if (h == 2) e.left = decode_leave_done(r.long_bytes(1 << 20));
     r.end();
     return e;
 }

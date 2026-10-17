@@ -305,7 +305,16 @@ inline Out compute() {
     lc.members = acc.members;
     lc.disappear_s = 3600;
     put("link.chat", hex(encode(lc)));
-    put("link.device_ask", hex(encode(DeviceAsk{true, {G.device, Side::Friend, true}})));
+    put("link.device_ask", hex(encode(DeviceAsk{{G.device, Side::Friend, true}})));
+    Leave leave;
+    leave.conversation = acc.conversation;
+    leave.generation = 2;
+    leave.leaving = device_id(G.device);
+    leave.previous = fill(0xd1);
+    leave.tick = 3;
+    leave.tail = encode(History{});
+    put("link.leave", hex(encode(leave)));
+    put("link.leave.decision", hex(leave.decision()));
     put("link.unlink", hex(encode(Unlink{UnlinkWhat::SplitAsk, {acc.conversation}, {gi.group}})));
     put("link.name", hex(encode(LinkName{acc.conversation, "Ana (work)"})));
     LinkHave have;
