@@ -2,6 +2,7 @@
 
     python test_browser.py vectors --wasm build/wasm --browser <chrome>
     python test_browser.py e2e --wasm build/wasm --browser <chrome>
+    python test_browser.py link --wasm build/wasm --browser <chrome>
 
 vectors: the protocol's vectors made by Wasm in the browser, and every
 Ed25519 signature and X25519 secret made by the browser's own WebCrypto,
@@ -94,7 +95,7 @@ window.result = await check(chat, JSON.parse(vec.vectors()), kept);
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('mode', choices=['vectors', 'e2e', 'release', 'meet'])
+    p.add_argument('mode', choices=['vectors', 'e2e', 'release', 'meet', 'link'])
     p.add_argument('--wasm', required=True)
     p.add_argument('--browser', default=os.environ.get('SGCHAT_BROWSER', ''))
     p.add_argument('--echo', default='', help='the native echo bot (sgchat_echo)')
@@ -107,6 +108,9 @@ def main():
     if a.mode == 'meet':
         import meet_browser
         sys.exit(meet_browser.run(a, serve, launch))
+    if a.mode == 'link':
+        import link_browser
+        sys.exit(link_browser.run(a, serve, launch))
     import e2e
     sys.exit(e2e.run(a, serve, launch))
 

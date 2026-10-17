@@ -10,7 +10,8 @@ page and the code disagree, the vectors decide, and one of them is a bug.
 
 **Protocol 11** (this page) adds linked devices: one person's devices
 acting as one (invite kind 6, conversation kind 3, the types `linked_chat`,
-`device_ask`, `unlink` and `link_name`, control kinds 13-15; a handoff's
+`device_ask`, `unlink` and `link_name`, control kinds 13-18 (what a linked
+device has and lacks; a device leaving a chat of its own accord); a handoff's
 ask and its end told to every old member; content version 11).
 **Protocol 10** makes the relay optional: an invite may name
 no relay (paired in person, over a link the two phones make from two codes
@@ -776,11 +777,10 @@ it, so one asks:
 - where this person is on the friend's side, it asks the owner's side, in a
   signed message in the chat:
 
-      device_ask = u8 11 | u8 add (1 add, 0 take out) | sign | agree | u8 flags
+      device_ask = u8 11 | sign | agree | u8 flags
 
   The owner's side (its proposer, the lowest owner's device) takes a
-  member's asks in turn: to add a device on the asker's own side, or to take
-  the asker itself out - never another, and never a side's last device. It
+  member's asks in turn, each a device added on the asker's own side. It
   proposes the handoff; the old quorum endorses it as ever. A device's word
   that a device is its own is all there is to it: the same as what a member
   could do with what it reads.
@@ -801,6 +801,8 @@ conversation (signed, sealed, accepted through Integrity like any message):
     trust:  empty (generation 0: it was in it from its start)
             u8 1 | long(Finalized) | long(Handoff): the handoff that brought this generation in,
                   checked as a further device checks its accept (the old committee is `before`)
+            u8 3 | long(LeaveDone): the leave (below) that made this generation, checked against
+                  the committee it left (the members and the one that left)
             u8 2 | short(sender key) | device id(32): a channel, to read, from now on
 
 It is taken only by a device the members name on that side, from a device
@@ -822,7 +824,8 @@ sequences it holds (at most 256 senders, 256 runs each; ascending, apart).
 that hears it gives what the other lacks: a chat it is in but lacks (given
 again, at most every ten minutes); then the epochs (control 14),
 
-    epochs = u8 11 | conversation(16) | u16 n | n x long(Finalized) | u8 h | (h: long(HandoffAsk), endorsed)
+    epochs = u8 11 | conversation(16) | u16 n | n x long(Finalized) | u16 b | b x long(leave)
+             | u8 h | (h = 1: long(HandoffAsk), endorsed; h = 2: long(LeaveDone))
 
 and the messages it lacks (text, files, strokes), each with its key
 (control 15, as a recovery's history):
@@ -837,8 +840,11 @@ from one of its own:
   finalization's id and its checkpoint its own) - its message ids are then
   agreed - or the next after where its agreement stands, which the engine's
   Agreement takes only with its committee's quorum of attestations;
+- a leave whose decision is where the history going back has reached: the
+  tail it names is agreed, and the history goes on back from its `previous`;
 - the handoff to the next generation, only verified against the old
-  committee and the last epoch, as `HandoffDone`;
+  committee and the last epoch, as `HandoffDone`; a leave to it, only as
+  `LeaveDone` (below);
 - a message, if it is of the generation the chat is at and its sender's
   signature holds (it is then taken as any message - Integrity, the
   window, acknowledged), or if an agreed epoch names it (as a recovered
@@ -858,22 +864,55 @@ an epoch agreed without it - is filled in.
     what:    1 forget, 2 keep, 3 split asked, 4 split agreed, 5 split refused
 
 - *Forget* and *keep*: this device leaves every chat it shares with a linked
-  device - taken out by handoff (on the owner's side it proposes it; on the
-  friend's it asks, `device_ask` 0); the linked devices stay. With keep, it
+  device, by a leave of its own (below); the linked devices stay. With keep, it
   keeps what was said, read only: the conversation's world says so (`left`,
   its `leave` arrow), and nothing is said in it from here. A chat no linked
   device is in ends here. The link ends at once on this device. A device
   that hears it stops counting the other as linked; a link of two ends.
   Neither waits for the other device: the chats' own quorums take it out.
+  A linked device that left a chat is not brought back into it while the
+  link lasts (a new link may).
 - *Split*: two linked devices agree which chats go with which. One asks
   (3, naming what it keeps and what the other keeps), the other agrees (4,
   naming the same from its own side) or refuses (5). Once each has agreed,
-  each leaves the chats that are the other's, by handoff, and the link ends.
-  Contacts see an ordinary change of devices.
+  each leaves the chats that are the other's, and the link ends. Contacts
+  see an ordinary change of devices.
 
-A device that leaves a chat on the owner's side waits for that chat's
-proposer for an epoch first: if that is the other linked device, and it is
-away, the chat is left when it is back.
+**Leaving a chat.** A handoff needs the chat's proposer (its owner's
+side's lowest device) for an epoch first - which may be the very linked
+device that is away. So a device leaves by a decision of its own, which no
+proposer makes:
+
+    leave    = u8 11 | conversation(16) | u64 generation (the one it makes) | leaving device id
+               | previous(32) (the agreement's last: an epoch's id, or a decision) | u64 tick (the next)
+               | long(tail) (the History since, as the leaving device has it)
+    decision = H(D("sg.chat.v11.leave") | leave)
+    epoch    = H(D("sg.chat.v11.leave.epoch") | conversation | u64 generation)
+
+Endorsements are engine `Attestation`s (`epoch`, `decision`, signer, by the
+signer's device key). A leave holds when distinct members of the current
+committee - the leaving device itself among them - have endorsed it, at
+least the committee's quorum. A member endorses only if `previous` and
+`tick` are where its own agreement stands, the tail is what its own log
+holds (behind: not yet; differs: shown, never endorsed), no other change is
+sealed, and - in a chat of two sides - the leaving device's side keeps a
+device. Control frames:
+
+| Kind | Body | From |
+| --- | --- | --- |
+| 16 LeaveAsk | leave \| attestation (its own) | the leaving device, to every member |
+| 17 LeaveVote | attestation | a member, to the leaving device |
+| 18 LeaveDone | leave \| u16 n \| n x attestation \| u8 m \| m x member (the committee it makes) \| member (the one that left) | the leaving device, to every member |
+
+`LeaveDone` is taken only if it holds against the receiver's committee, at
+its generation + 1. Then, on every device: the committee is the one it
+names (`device.revoke` in the world), the `Agreement` starts again with
+`previous = decision` at `tick` (the tail agreed: the next epoch starts
+after it), what each device said after the tail is said again under the
+next generation, groups turn their sender keys, and the owner's side's
+lowest device turns the conversation secret (the device that left knew it).
+A device asks again after two minutes if nothing came of it (its history
+may have moved on meanwhile).
 
 ## Gaps
 
@@ -1073,6 +1112,7 @@ per mailbox and in all, bounds rooms and members, and logs nothing.
 | Carried a minute, per giver | 120 signals, 60 envelopes, 30 asks |
 | Linked: what a device has, said | at its start, when a link comes up, every 5 min |
 | Linked: a chat given again, a device asked for again | at most every 10 min |
+| A leave asked again | after 2 min |
 
 ## Test vectors
 
