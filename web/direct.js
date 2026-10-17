@@ -183,6 +183,24 @@ export function readAnswer(s) {
   return { token, answer };
 }
 
+// Linking again in person (protocol 11): two devices already paired, that
+// lost every link (reloaded with no relay), make one from two codes, and
+// their conversations' signals go over it - as when they paired.
+//   the code shown:  https://<site>/#l1.<base64url(u8 3 | token(16) | short(offer))>
+//   the answer:      as above (answerCode), with this token
+export function relinkLink(origin, token, offer) {
+  if (token.length !== 16) throw new Error('p-chat: a token is 16 bytes');
+  return origin + '#l1.' + base64url(cat(new Uint8Array([3]), token, short(offer, 1024)));
+}
+export function readRelink(fragment) {
+  if (!fragment.startsWith('l1.')) throw new Error('p-chat: not a code to link again');
+  const r = new Reader(unbase64url(fragment.slice(3)));
+  if (r.u8() !== 3) throw new Error('p-chat: a code of another version');
+  const token = r.bytes(16), offer = r.short(1024);
+  r.end();
+  return { token, offer };
+}
+
 // ---- the link the two phones make ----
 // Frames on it: u8 1 | request box (to the owner) ; u8 2 | envelope (the
 // accept) ; u8 3 | room(32) | signal box (the conversation's own signals,

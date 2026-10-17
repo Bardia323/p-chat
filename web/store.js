@@ -94,6 +94,11 @@ export const dropAsking = () => c.del('meta', 'asking');
 export const saveHeld = (key, h) => putSealed('meta', 'held:' + key, h);
 export const dropHeld = (key) => c.del('meta', 'held:' + key);
 export const held = () => rangeSealed('meta', 'held:');
+// What a device that relays remembers of where its contacts' devices are
+// reached (rooms and labels, as a relay's rooms are), 14 days at most.
+export const saveServed = (key, s) => putSealed('meta', 'served:' + key, s);
+export const dropServed = (key) => c.del('meta', 'served:' + key);
+export const served = () => rangeSealed('meta', 'served:');
 export const saveOutbox = (id, o) => putSealed('meta', 'out:' + id, o);
 export const dropOutbox = (id) => c.del('meta', 'out:' + id);
 export async function outbox() {

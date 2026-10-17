@@ -1,4 +1,4 @@
-// Contacts carrying for each other (protocol 10): the relay's work, done by
+// Contacts carrying for each other (protocol 10; relaying, 11): the relay's work, done by
 // the phones themselves on the live links they already have.
 //
 // A phone says to each contact it is linked with which rooms it is in (the
@@ -25,12 +25,34 @@
 // rooms a peer, 512 envelopes and 16 MiB held in all, 128 from any one
 // giver, kept 14 days; a giver may pass 120 signals and hold 60 envelopes a
 // minute.
+//
+// A device that relays (protocol 11): one its owner leaves open - a computer
+// on a desk - and says so (Settings). It does what every carrier does, with
+// room for more (RELAYING), keeps what it holds across reloads (as every
+// carrier does, in IndexedDB), and says so to its contacts:
+//
+//   8 relays: u8 flags (bit 0: this device relays)       said when it changes, and each minute
+//   9 serves: u16 n | n x (room | label | u8 now)          the devices of your chats it keeps mail for
+//
+// A relaying device remembers, for 14 days, the rooms and labels its linked
+// contacts said (where each device is reached). To each linked contact it
+// says those that share a room with it - so the contact knows that a message
+// for a device that is away will be kept here and asked for - with `now` 1
+// for a device linked here this moment: the two can find each other again
+// through it. The contact learns what a relay's room tells: that a device
+// of their own chat comes by this one, and when. Nothing else.
 
-export const KIND = { rooms: 1, pass: 2, signal: 3, hold: 4, ask: 5, given: 6, taken: 7 };
+export const KIND = { rooms: 1, pass: 2, signal: 3, hold: 4, ask: 5, given: 6, taken: 7, relays: 8, serves: 9 };
 export const LIMITS = { rooms: 256, held: 512, heldBytes: 16 << 20, perGiver: 128, ttl: 14 * 86400e3, passPerMinute: 120,
-  holdPerMinute: 60, askIds: 1024, box: 131072 };
+  holdPerMinute: 60, askIds: 1024, box: 131072, serves: 1024 };
+// What a device that relays takes on: a relay's share, for the few it serves.
+export const RELAYING = { ...LIMITS, held: 4096, heldBytes: 256 << 20, perGiver: 1024, passPerMinute: 600, holdPerMinute: 300 };
+export const FLAG = { relays: 1 };
 const SIZES = new Set([1024, 16384, 262144].map((b) => 1 + 32 + 72 + b));
 const ROOMS_AGAIN_MS = 60e3, ASK_EVERY_MS = 8e3;
+// What a relaying device remembers of where a contact is reached is written
+// down again at most this often (it is read on each tick from memory).
+const SERVED_WRITE_MS = 3600e3;
 
 const cat = (...parts) => {
   const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
@@ -43,6 +65,7 @@ const u32 = (n) => new Uint8Array([n >>> 24, (n >>> 16) & 255, (n >>> 8) & 255, 
 const read16 = (b, at) => (b[at] << 8) | b[at + 1];
 const read32 = (b, at) => ((b[at] << 24) >>> 0) + (b[at + 1] << 16) + (b[at + 2] << 8) + b[at + 3];
 const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+const hexBytes = (s) => Uint8Array.from(s.match(/../g), (x) => parseInt(x, 16));
 
 // A frame, read whole or refused (null).
 export function read(frame) {
@@ -85,6 +108,20 @@ export function read(frame) {
       for (let i = 0; i < n; i++) handles.push(b.slice(34 + i * 16, 50 + i * 16));
       return { kind: k, mailbox: b.slice(0, 32), handles };
     }
+    if (k === KIND.relays) {
+      if (b.length !== 1 || (b[0] & ~FLAG.relays)) return null;
+      return { kind: k, flags: b[0] };
+    }
+    if (k === KIND.serves) {
+      const n = read16(b, 0);
+      if (n > LIMITS.serves || b.length !== 2 + n * 65) return null;
+      const devices = [];
+      for (let i = 0, at = 2; i < n; i++, at += 65) {
+        if (b[at + 64] > 1) return null;
+        devices.push({ room: b.slice(at, at + 32), label: b.slice(at + 32, at + 64), now: b[at + 64] === 1 });
+      }
+      return { kind: k, devices };
+    }
   } catch { /* cut short */ }
   return null;
 }
@@ -99,16 +136,67 @@ export const frames = {
   ask: (ids) => cat(new Uint8Array([KIND.ask]), u16(ids.length), ...ids),
   given: (mailbox, handle, env) => cat(new Uint8Array([KIND.given]), mailbox, handle, env),
   taken: (mailbox, handles) => cat(new Uint8Array([KIND.taken]), mailbox, u16(handles.length), ...handles),
+  relays: (flags) => new Uint8Array([KIND.relays, flags]),
+  serves: (devices) => cat(new Uint8Array([KIND.serves]), u16(devices.length),
+    ...devices.flatMap((d) => [d.room, d.label, new Uint8Array([d.now ? 1 : 0])])),
 };
 
 // One phone's carrying. `io` is what it needs of the host:
 //   send(peer, frame), peers() (linked now), rooms() ([{room, label}], its own),
 //   mailboxes() (its own ids), signalIn(room, box), open(envelope) -> status,
-//   handle(envelope) (16 bytes), helping(), keep {list(), put(item), drop(key)}, now().
+//   handle(envelope) (16 bytes), helping(), keep {list(), put(item), drop(key)}, now();
+//   and for relaying (protocol 11): relaying() (this device relays),
+//   served {list(), put(item), drop(key)} (what it remembers of its contacts'
+//   rooms), near(peer, rooms) (a linked relaying contact has, this moment,
+//   devices of these rooms linked to it).
 export class Carry {
   constructor(io) {
     // What it did for others, counted (for looking, never for deciding).
-    Object.assign(this, { io, reach: new Map(), told: new Map(), asked: new Map(), rates: new Map(), done: { passed: 0, held: 0, given: 0 } });
+    Object.assign(this, { io, reach: new Map(), told: new Map(), asked: new Map(), rates: new Map(), done: { passed: 0, held: 0, given: 0 },
+      relaying: new Map(), serving: new Map(), flagged: new Map(), servesTold: new Map(), served: null });
+  }
+  limits() { return this.io.relaying?.() ? RELAYING : LIMITS; }
+  // The linked contacts that say they relay.
+  relays() { return this.io.peers().filter((p) => this.relaying.get(p) & FLAG.relays); }
+  // Labels kept for in `room` (hex) by the linked contacts that relay: the
+  // devices a message for which is kept and asked for there.
+  servedIn(room) {
+    const out = new Set();
+    for (const p of this.relays()) for (const d of this.serving.get(p) || []) if (hex(d.room) === room) out.add(hex(d.label));
+    return out;
+  }
+  // A relaying device's memory of where its contacts are reached, read once
+  // from the store and written back when it changes (or an hour on).
+  async remember(now) {
+    if (!this.served) {
+      this.served = new Map();
+      for (const s of (await this.io.served?.list()) || []) this.served.set(s.key, s);
+    }
+    const ttl = LIMITS.ttl;
+    for (const [p, m] of this.reach)
+      for (const k of m.keys()) {
+        const was = this.served.get(k);
+        if (was && was.peer === p && now - was.at < SERVED_WRITE_MS) continue;
+        const s = { key: k, room: hexBytes(k.slice(0, 64)), label: hexBytes(k.slice(64)), peer: p, at: now };
+        this.served.set(k, s);
+        await this.io.served?.put(s);
+      }
+    for (const [k, s] of this.served) if (now - s.at > ttl) { this.served.delete(k); await this.io.served?.drop(k); }
+  }
+  // What a relaying device says to `peer`: the devices it keeps mail for
+  // that share a room with it (not the peer's own), linked here now or not.
+  servesFor(peer) {
+    const mine = this.reach.get(peer);
+    if (!mine) return [];
+    const rooms = new Set([...mine.keys()].map((k) => k.slice(0, 64)));
+    const now = new Set();
+    for (const [p, m] of this.reach) if (p !== peer) for (const k of m.keys()) now.add(k);
+    const out = [];
+    for (const [k, s] of this.served || []) {
+      if (out.length >= LIMITS.serves) break;
+      if (rooms.has(k.slice(0, 64)) && !mine.has(k) && s.peer !== peer) out.push({ room: s.room, label: s.label, now: now.has(k) });
+    }
+    return out;
   }
   // A peer that may pass on n more of `what` this minute.
   allowed(peer, what, per) {
@@ -124,7 +212,15 @@ export class Carry {
   async tick() {
     const now = this.io.now(), peers = new Set(this.io.peers());
     for (const p of [...this.reach.keys()]) if (!peers.has(p)) this.reach.delete(p);
-    for (const p of [...this.told.keys()]) if (!peers.has(p)) this.told.delete(p);
+    for (const m of [this.told, this.relaying, this.serving, this.flagged, this.servesTold])
+      for (const p of [...m.keys()]) if (!peers.has(p)) m.delete(p);
+    const relaying = !!this.io.relaying?.();
+    if (relaying) await this.remember(now);
+    else if (this.served) {
+      // No longer relaying: what it remembered of others is forgotten.
+      for (const k of this.served.keys()) await this.io.served?.drop(k);
+      this.served = null;
+    }
     const mine = this.io.rooms().slice(0, LIMITS.rooms);
     const said = mine.map((r) => hex(r.room) + hex(r.label)).join();
     const ids = this.io.mailboxes();
@@ -137,6 +233,16 @@ export class Carry {
       if (ids.length && now - (this.asked.get(p) || 0) > ASK_EVERY_MS) {
         this.asked.set(p, now);
         for (let i = 0; i < ids.length; i += LIMITS.askIds) this.io.send(p, frames.ask(ids.slice(i, i + LIMITS.askIds)));
+      }
+      // That this device relays, said once it does (and once it stops).
+      const flags = relaying ? FLAG.relays : 0, f = this.flagged.get(p);
+      if ((flags || f) && (!f || f.flags !== flags || now - f.at > ROOMS_AGAIN_MS) && this.io.send(p, frames.relays(flags)))
+        this.flagged.set(p, { flags, at: now });
+      if (relaying) {
+        const list = this.servesFor(p), was = this.servesTold.get(p);
+        const key = list.map((d) => hex(d.room) + hex(d.label) + (d.now ? 1 : 0)).join();
+        if ((list.length || was) && (!was || was.key !== key || now - was.at > ROOMS_AGAIN_MS) && this.io.send(p, frames.serves(list)))
+          this.servesTold.set(p, { key, at: now });
       }
     }
     // Kept too long: gone.
@@ -152,11 +258,15 @@ export class Carry {
     }
     return n;
   }
-  // An envelope for a device that is away, given to up to three contacts to keep.
-  hold(env, recipient) {
+  // An envelope for a device that is away, given to up to three contacts to
+  // keep - every contact that relays first, whatever their number. Only
+  // those that relay, when `relaysOnly` (given again to one newly linked).
+  hold(env, recipient, relaysOnly = false) {
+    const relays = new Set(this.relays());
+    const order = [...relays, ...(relaysOnly ? [] : this.io.peers().filter((p) => !relays.has(p)))];
     let n = 0;
-    for (const p of this.io.peers()) {
-      if (p === recipient || n >= 3) continue;
+    for (const p of order) {
+      if (p === recipient || (n >= 3 && !relays.has(p))) continue;
       if (this.io.send(p, frames.hold(env))) n++;
     }
     return n;
@@ -173,7 +283,7 @@ export class Carry {
         return 'ok';
       }
       case KIND.pass: {
-        if (!helping || !this.allowed(peer, 'pass', LIMITS.passPerMinute)) return 'refused';
+        if (!helping || !this.allowed(peer, 'pass', this.limits().passPerMinute)) return 'refused';
         const k = hex(f.room) + hex(f.label);
         for (const [p, m] of this.reach) {
           if (p === peer || !m.has(k)) continue;
@@ -185,13 +295,14 @@ export class Carry {
       }
       case KIND.signal: this.io.signalIn(f.room, f.box); return 'ok';
       case KIND.hold: {
-        if (!helping || !this.allowed(peer, 'hold', LIMITS.holdPerMinute)) return 'refused';
+        const L = this.limits();
+        if (!helping || !this.allowed(peer, 'hold', L.holdPerMinute)) return 'refused';
         const list = await this.io.keep.list();
         const mailbox = f.envelope.slice(1, 33), handle = this.io.handle(f.envelope), key = hex(mailbox) + hex(handle);
         if (list.some((h) => h.key === key)) return 'ok';
         const bytes = list.reduce((s, h) => s + h.envelope.length, 0);
-        if (list.length >= LIMITS.held || bytes + f.envelope.length > LIMITS.heldBytes ||
-          list.filter((h) => h.from === peer).length >= LIMITS.perGiver) return 'full';
+        if (list.length >= L.held || bytes + f.envelope.length > L.heldBytes ||
+          list.filter((h) => h.from === peer).length >= L.perGiver) return 'full';
         await this.io.keep.put({ key, mailbox, handle, envelope: f.envelope, from: peer, at: this.io.now() });
         this.done.held++;
         return 'held';
@@ -215,6 +326,16 @@ export class Carry {
       case KIND.taken: {
         const gone = new Set(f.handles.map((h) => hex(f.mailbox) + hex(h)));
         for (const h of await this.io.keep.list()) if (gone.has(h.key)) await this.io.keep.drop(h.key);
+        return 'ok';
+      }
+      case KIND.relays: this.relaying.set(peer, f.flags); return 'ok';
+      case KIND.serves: {
+        // Believed only of a contact that said it relays (and only for
+        // deciding where to keep and whom to look for: nothing is opened).
+        if (!(this.relaying.get(peer) & FLAG.relays)) return 'refused';
+        this.serving.set(peer, f.devices);
+        const near = [...new Set(f.devices.filter((d) => d.now).map((d) => hex(d.room)))];
+        if (near.length) this.io.near?.(peer, near);
         return 'ok';
       }
       default: return 'refused';
