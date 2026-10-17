@@ -65,6 +65,10 @@ function logo() {
     h('span', { class: 'p' }, 'p'), h('span', { class: 'dash', 'aria-hidden': 'true' }, h('i'), h('i'), h('i'), h('i'), h('i')),
     h('span', { class: 'c' }, 'chat'));
 }
+// How the keyboard is used, said on a computer's screen (hidden on a phone).
+const kbd = (k) => h('kbd', {}, k);
+const keysHint = () => h('p', { class: 'keys-hint', 'data-test': 'keys-hint' },
+  kbd('Enter'), ' sends · ', kbd('Shift'), ' + ', kbd('Enter'), ' a new line · ', kbd('Esc'), ' goes back');
 // A fingerprint picture: the same drawing on every phone, whatever its fonts.
 function emojiPic(e) {
   const code = Array.from(e.glyph).map((ch) => ch.codePointAt(0)).filter((c) => c !== 0xfe0f).map((c) => c.toString(16)).join('-');
@@ -454,13 +458,16 @@ async function renderContacts() {
   if (state.screen !== 'contacts') return;
   const band = h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'This phone'),
     h('p', { class: 'caps light' }, ids.length ? ids.length + (ids.length === 1 ? ' conversation' : ' conversations') : 'Private messages, phone to phone'));
-  if (wide() && ids.length) {
-    // A computer: the list is beside; here, room to begin.
+  if (wide()) {
+    // A computer: the list is beside (with its keys); here, room to begin.
     draw(head('Hello'), h('main', {}, releaseBanners(), installBanner(), band, h('div', { class: 'lines' }),
-      h('div', { class: 'empty pick', 'data-test': 'pick' }, h('p', { class: 'caps' }, 'Pick a chat on the left'),
-        h('p', {}, 'Or begin a new one.'),
+      h('div', { class: ids.length ? 'empty pick' : 'empty welcome', 'data-test': ids.length ? 'pick' : 'no-chats' },
+        h('p', { class: 'caps' }, ids.length ? 'Pick a chat on the left' : 'No chats yet'),
+        h('p', {}, ids.length ? 'Or begin a new one.' : 'Invite someone: they scan your code, or open your link.'),
         h('div', { class: 'row' }, h('button', { class: 'btn', 'data-test': 'start-invite', onclick: () => show('invite', { invite: null }) }, 'Invite someone'),
-          h('button', { class: 'btn light', 'data-test': 'scan-code', onclick: () => scanned() }, 'Scan their code')))));
+          h('button', { class: 'btn light', 'data-test': 'scan-code', onclick: () => scanned() }, 'Scan their code')),
+        ids.length ? null : h('p', { class: 'fine' }, 'Were you sent a link? Open it in this browser.'),
+        keysHint())));
     return;
   }
   draw(head('Chats'), h('main', {}, releaseBanners(), installBanner(), band, h('div', { class: 'lines' }),
@@ -471,7 +478,7 @@ async function renderContacts() {
 // A computer's wide window: the chats in a pane of their own beside the
 // screen, the open chat marked; a phone has one screen at a time.
 const wideWindow = globalThis.matchMedia?.('(min-width: 900px)');
-const wide = () => !!wideWindow?.matches && !!session.app;
+const wide = () => !!wideWindow?.matches;
 const side = document.getElementById('side');
 let sideTimer = 0;
 function renderSide() {
@@ -489,7 +496,11 @@ function renderSide() {
 wideWindow?.addEventListener('change', () => { renderSide(); if (state.screen) show(state.screen, {}); });
 // Esc goes back, on a computer as the back key does on a phone.
 addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape' || state.screen === 'call' || document.querySelector('[data-test=scanner]')) return;
+  if (e.key !== 'Escape') return;
+  // The camera reading a code closes first; a call is left only by hanging up.
+  const scanner = document.querySelector('[data-test=scanner-cancel]');
+  if (scanner) { scanner.click(); return; }
+  if (state.screen === 'call') return;
   if (steps.length > 1) history.back();
 });
 
@@ -747,7 +758,7 @@ async function renderInvite() {
       renderInviteShown();
     } catch (e) { toast(e.message); }
   };
-  draw(head('Invite', { back: () => show('contacts') }), h('main', {},
+  draw(head('Invite', { back: () => show('contacts') }), h('main', {}, h('div', { class: 'choices' },
     h('button', { class: 'choice yellow', 'data-test': 'kind-code', onclick: meet },
       h('p', { class: 'caps' }, 'A new contact'), h('p', { class: 'caps light' }, 'They scan your code, or open your link')),
     h('button', { class: 'choice amber', 'data-test': 'kind-contact', onclick: () => make(KIND.contact), disabled: !linked },
@@ -755,7 +766,7 @@ async function renderInvite() {
     h('button', { class: 'choice orange', 'data-test': 'kind-extra', onclick: () => make(KIND.extra), disabled: !contacts.length || !linked },
       h('p', { class: 'caps' }, 'Another device of…'), h('p', { class: 'caps light' }, 'One more phone or computer for a contact')),
     h('button', { class: 'choice red', 'data-test': 'kind-reusable', onclick: () => make(KIND.reusable), disabled: !contacts.length || !linked },
-      h('p', { class: 'caps' }, 'Reusable device key for…'), h('p', { class: 'caps light' }, 'Works until you cancel it')),
+      h('p', { class: 'caps' }, 'Reusable device key for…'), h('p', { class: 'caps light' }, 'Works until you cancel it'))),
     h('div', { class: 'pad' },
       linked ? null : h('p', { class: 'fine', 'data-test': 'relay-off-note' }, 'Relays are off (Settings), so invites go in person only.'),
       contacts.length ? h('label', { class: 'field' }, h('span', {}, 'Whose device'), pick) : null,
@@ -770,15 +781,15 @@ function renderInviteShown() {
   qr.make();
   const img = h('img', { class: 'qr', alt: 'Invite link as a QR code', src: qr.createDataURL(8, 0), 'data-test': 'qr', 'data-link': inv.link });
   const words = inv.code.split(' ');
-  draw(head('Invite', { small: true, back: () => { state.invite = null; show('contacts'); } }), h('main', {},
+  draw(head('Invite', { small: true, back: () => { state.invite = null; show('contacts'); } }), h('main', {}, h('div', { class: 'split' }, h('div', {},
     h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, inv.kind === KIND.contact ? 'Scan with their phone camera' : 'Scan with the new device')),
-    h('div', { class: 'pad' }, img,
-      h('div', { class: 'row' }, h('button', { class: 'btn light', onclick: async () => { await navigator.clipboard?.writeText(inv.link); toast('Link copied. Send it; say the words separately.'); } }, 'Copy link'))),
-    h('div', { class: 'band amber' }, h('p', { class: 'caps' }, 'Then say these six words'), h('p', { class: 'caps light' }, 'Out loud or another way. Never with the link.')),
+    h('div', { class: 'pad center' }, img,
+      h('div', { class: 'row' }, h('button', { class: 'btn light', onclick: async () => { await navigator.clipboard?.writeText(inv.link); toast('Link copied. Send it; say the words separately.'); } }, 'Copy link')))),
+    h('div', {}, h('div', { class: 'band amber' }, h('p', { class: 'caps' }, 'Then say these six words'), h('p', { class: 'caps light' }, 'Out loud or another way. Never with the link.')),
     h('div', { class: 'pad' }, h('ol', { class: 'words', 'data-test': 'words' }, words.map((w) => h('li', {}, w))),
       h('p', { class: 'fine', 'data-test': 'invite-status' }, inv.kind === KIND.contact ? 'Waiting for them to pair…'
         : inv.kind === KIND.recovery ? 'Waiting… the others approve, and the lost device has a day to object.' : 'Waiting… their other device must approve.'),
-      h('button', { class: 'btn light', onclick: async () => { await session.cancelInvite(inv.token); state.invite = null; show('contacts'); } }, 'Cancel invite'))));
+      h('button', { class: 'btn light', onclick: async () => { await session.cancelInvite(inv.token); state.invite = null; show('contacts'); } }, 'Cancel invite'))))));
 }
 function renderInviteStatus() {
   const s = root.querySelector('[data-test=invite-status]');
@@ -812,7 +823,7 @@ function renderNewGroup() {
     h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, channel ? 'Only you post' : 'Everyone talks'),
       h('p', { class: 'caps light' }, channel ? 'Readers come by invite, and only read' : 'Each phone has its own key; it turns when people come and go')),
     h('div', { class: 'pad' }, h('label', { class: 'field' }, h('span', {}, 'Name'), name),
-      channel ? null : h('div', {}, h('p', { class: 'caps' }, 'Who is in it'), picks.length ? picks : h('p', { class: 'fine' }, 'Pair with someone first.')),
+      channel ? null : h('div', {}, h('p', { class: 'caps' }, 'Who is in it'), picks.length ? h('div', { class: 'picks' }, picks) : h('p', { class: 'fine' }, 'Pair with someone first.')),
       h('button', { class: 'btn wide', 'data-test': 'make-group', onclick: make }, channel ? 'Make the channel' : 'Make the group'))));
 }
 
@@ -837,17 +848,17 @@ function renderInPerson(inv) {
   const pasted = h('input', { autocomplete: 'off', spellcheck: 'false', autocapitalize: 'none', placeholder: 'p-chat:a1.…', 'data-test': 'answer-text' });
   draw(head('Invite', { small: true, back: () => { session.endPairing(); state.invite = null; show('contacts'); } }), h('main', {},
     h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Let them scan this'), h('p', { class: 'caps light' }, 'Or send them the link')),
-    h('div', { class: 'pad' }, img,
+    h('div', { class: 'split' }, h('div', { class: 'pad center' }, img,
       h('div', { class: 'row' }, h('button', { class: 'btn light', 'data-test': 'copy-link', onclick: async () => {
         await navigator.clipboard?.writeText(inv.link).catch(() => {});
         toast('Link copied. Anyone with it can pair, once: send it only to them.');
-      } }, 'Copy link')),
-      status,
+      } }, 'Copy link'))),
+    h('div', { class: 'pad' }, status,
       h('p', { class: 'fine' }, relayed ? 'Their phone answers through the relay. If it shows a code instead, scan it:'
         : 'No relay: when their phone shows a code, scan it.'),
       h('button', { class: relayed ? 'btn light' : 'btn wide', 'data-test': 'scan-answer', onclick: scan }, 'Scan their code'),
       h('label', { class: 'field' }, h('span', {}, 'Or paste their code'), pasted),
-      h('button', { class: 'btn light', 'data-test': 'use-answer', onclick: () => take(pasted.value) }, 'Use this code'))));
+      h('button', { class: 'btn light', 'data-test': 'use-answer', onclick: () => take(pasted.value) }, 'Use this code')))));
 }
 
 // The phone shown a code in person: its names, then a code of its own back.
@@ -869,12 +880,13 @@ function renderMeet() {
       : 'Waiting for them to scan it…';
     draw(head('In person', { small: true, back: () => { session.endPairing(); state.meetCode = null; show('contacts'); } }), h('main', {},
       h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Show them this code'), h('p', { class: 'caps light' }, 'Their phone scans it')),
-      h('div', { class: 'pad' }, h('img', { class: 'qr', alt: 'Your answer as a code', src: qr.createDataURL(8, 0), 'data-test': 'answer-qr', 'data-code': state.meetCode }),
+      h('div', { class: 'split' }, h('div', { class: 'pad center' }, h('img', { class: 'qr', alt: 'Your answer as a code', src: qr.createDataURL(8, 0), 'data-test': 'answer-qr', 'data-code': state.meetCode }),
         h('div', { class: 'row' }, h('button', { class: 'btn light', 'data-test': 'copy-answer', onclick: async () => {
           await navigator.clipboard?.writeText(state.meetCode).catch(() => {});
           toast('Copied. Send it to them: they paste it where they would scan it.');
-        } }, 'Copy code')),
-        h('p', { class: 'fine', 'data-test': 'pair-status' }, status))));
+        } }, 'Copy code'))),
+        h('div', { class: 'pad' }, h('p', { class: 'fine', 'data-test': 'pair-status' }, status),
+          h('p', { class: 'keys-hint' }, 'Their phone scans it with its camera, and the two are paired. Or copy the code and send it to them.')))));
     return;
   }
   const mail = h('input', { type: 'checkbox', 'data-test': 'mail' });
@@ -965,7 +977,7 @@ function renderPaired() {
   call.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
   draw(head('Paired', { small: true, back: go }), h('main', {},
     h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Paired')),
-    h('div', { class: 'pad' },
+    h('div', { class: 'pad paired' },
       naming ? h('label', { class: 'field' }, h('span', {}, 'What do you call them?'), call) : null,
       h('div', { class: 'emoji', 'data-test': 'fingerprint' }, fp.map((e) => h('div', { 'data-glyph': e.glyph }, emojiPic(e), h('span', { class: 'n' }, e.name)))),
       h('p', {}, 'Both phones show these four pictures. To be sure no one stood between you, compare them by voice.'),
@@ -1031,6 +1043,8 @@ function renderDevices() {
   draw(head('Devices', { small: true, back: () => show('chat', { conv: id }) }), h('main', {},
     h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, info.name),
       h('p', { class: 'caps light' }, (info.introduced && info.introduced !== info.name ? 'Calls themself ' + info.introduced + ' · ' : '') + 'Generation ' + info.generation)),
+    // Two columns on a computer: what this chat is to you, then its devices.
+    h('div', { class: 'cols' }, h('div', { class: 'col' },
     h('div', { class: 'pad' }, h('label', { class: 'field' }, h('span', {}, 'What you call them (only you see this)'), rename),
       h('button', { class: 'btn light', 'data-test': 'rename-save', onclick: async () => {
         const n = clip(rename.value);
@@ -1039,7 +1053,7 @@ function renderDevices() {
         renderDevices();
       } }, 'Rename')),
     delivery,
-    info.kind !== 2 ? options : null,
+    info.kind !== 2 ? options : null), h('div', { class: 'col' },
     rows,
     h('div', { class: 'pad' },
       owner && info.kind === 0 ? h('button', { class: 'btn light', onclick: () => { state.invite = null; show('invite'); } }, 'Add a device for ' + info.name) : null,
@@ -1055,7 +1069,7 @@ function renderDevices() {
         if (!confirm('Forget ' + info.name + ' on this device? The messages here are deleted.')) return;
         await session.removeContact(id);
         show('contacts');
-      } }, 'Forget contact'))));
+      } }, 'Forget contact'))))));
 }
 
 // The symbol a notification for this chat shows, chosen here and known only here.
@@ -1204,6 +1218,7 @@ function renderGame() {
   // Two wide keys under the court, held to move: the paddle goes while one is held.
   const hold = (dir) => {
     const b = h('button', { class: 'pad-key', 'data-test': dir > 0 ? 'up' : 'down', 'aria-label': dir > 0 ? 'Up' : 'Down' },
+      h('span', { 'aria-hidden': 'true' }, kbd(dir > 0 ? 'W' : 'S'), kbd(dir > 0 ? '↑' : '↓')),
       svg(dir > 0 ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 15l7-7 7 7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>'
         : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 9l7 7 7-7" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>'));
     const on = (v) => (e) => { e.preventDefault(); b.classList.toggle('held', v); liveCourt?.press(dir, v); };
@@ -1217,7 +1232,8 @@ function renderGame() {
       h('button', { class: 'back', 'data-test': 'stop-game', 'aria-label': 'Stop and go back', onclick: stop }, '◀'),
       h('div', {}, h('h1', {}, 'Table tennis'), h('div', { class: 'sub' }, 'With ' + info.name)),
       h('button', { class: 'label', onclick: stop }, 'Stop')),
-    h('main', { class: 'game' }, canvas, h('p', { class: 'fine' }, 'Hold a key, or drag on the court.')),
+    h('main', { class: 'game' }, canvas, h('p', { class: 'fine' }, 'Hold a key, or drag on the court.'),
+      h('p', { class: 'keys-hint fine', 'data-test': 'game-keys' }, 'On the keyboard: hold ', kbd('W'), ' or ', kbd('↑'), ' for up, ', kbd('S'), ' or ', kbd('↓'), ' for down.')),
     h('div', { class: 'composer pads' }, hold(1), hold(-1)));
   liveCourt?.stop();
   liveCourt = new Court(session, game, canvas);
@@ -1368,7 +1384,7 @@ async function renderSettings() {
   const pair = (test, on, set) => h('div', { class: 'theme', role: 'group' },
     h('button', { class: 'btn light', 'aria-pressed': String(on), 'data-test': test + '-on', onclick: async () => { await set(true); renderSettings(); } }, 'On'),
     h('button', { class: 'btn light', 'aria-pressed': String(!on), 'data-test': test + '-off', onclick: async () => { await set(false); renderSettings(); } }, 'Off'));
-  draw(head('Settings', { small: true, back: () => show('about') }), h('main', {},
+  draw(head('Settings', { small: true, back: () => show('about') }), h('main', {}, h('div', { class: 'cols' },
     h('div', { class: 'pad' },
       h('p', { class: 'caps' }, 'Look'), looks,
       h('p', { class: 'caps' }, 'Relay'), pair('relay', relayOn, (on) => session.setRelay(on)),
@@ -1378,7 +1394,8 @@ async function renderSettings() {
       h('p', { class: 'caps' }, 'Carry for contacts'), pair('carry', helping, (on) => session.setHelping(on)),
       h('p', { class: 'fine' }, helping
         ? 'On. While linked, this phone passes locked signals between your contacts and keeps locked messages for them while they are away. It cannot read them - but it does see which of your contacts talk to each other.'
-        : 'Off. This phone carries nothing for others. It still takes what is for it.'),
+        : 'Off. This phone carries nothing for others. It still takes what is for it.')),
+    h('div', { class: 'pad' },
       notifications(p),
       h('details', { class: 'more', 'data-test': 'advanced' }, h('summary', {}, 'Advanced'),
         h('label', { class: 'field' }, h('span', {}, 'Relay for invites you make'), relay),
@@ -1395,7 +1412,7 @@ async function renderSettings() {
           said.textContent = url ? 'Connected. New invites use it.' : 'New invites use the relay this p-chat came with.';
         } }, 'Use this relay'),
         said,
-        h('p', { class: 'fine' }, session.dev ? 'Device ' + hex(session.chat.deviceId(session.dev.signPub, session.dev.agreePub)) : 'No device key yet.')))));
+        h('p', { class: 'fine' }, session.dev ? 'Device ' + hex(session.chat.deviceId(session.dev.signPub, session.dev.agreePub)) : 'No device key yet.'))))));
 }
 
 // A server someone typed: answered within a few seconds, or why not (in words).
