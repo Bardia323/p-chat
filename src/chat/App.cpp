@@ -1197,8 +1197,11 @@ void App::maybe_propose(Conversation& c, bool nudge) {
     if (c.change && c.change->endorsed) return;
     if (proposer_of(c.members) != peer_) return;
     const auto since = since_epoch(c);
-    const bool due = since >= epoch_every || (since > 0 && day_ > c.epoch_day) || (nudge && (since > 0 || !c.last)) ||
-                     (c.nudged && (since > 0 || !c.last));
+    // A handoff extends an epoch its own committee finalized: after one
+    // handoff, the next waits for an epoch of the new committee, said or not.
+    const bool stale = !c.last || c.last->context.committee != c.committee.id();
+    const bool due = since >= epoch_every || (since > 0 && day_ > c.epoch_day) || (nudge && (since > 0 || stale)) ||
+                     (c.nudged && (since > 0 || stale));
     if (!due) return;
     c.nudged = false;
     const auto history = history_of(c.log, c.cutoffs);
@@ -1556,8 +1559,9 @@ void App::continue_change(Conversation& c) {
         return;
     }
     if (!ch.mine || c.run || c.proposing) return;
-    // The handoff extends the last epoch, which must cover everything said.
-    if (!c.last || since_epoch(c) > 0) {
+    // The handoff extends the last epoch, which must cover everything said,
+    // and be this committee's own.
+    if (!c.last || c.last->context.committee != c.committee.id() || since_epoch(c) > 0) {
         if (!c.agreement) return;
         const auto proposer = proposer_of(c.members);
         if (proposer == peer_) maybe_propose(c, true);
@@ -1620,7 +1624,7 @@ void App::endorse(Conversation& c) {
     });
 }
 
-void App::apply_handoff(Conversation& c, const sg::net::Handoff& h, const std::vector<Member>& next) {
+void App::apply_handoff(Conversation& c, const sg::net::Handoff& h, std::vector<Member> next) {
     const auto problem = problem_of(*c.last);
     auto resumed = sg::net::Agreement::resume(problem, c.committee, c.verify(), h,
                                               [this, cid = c.hexid](const Bytes& b) { persist_agreement(conv(cid), b); });
@@ -4037,7 +4041,12 @@ void App::take_linked(Conversation& self, const sg::net::Observation& o, const B
     (void)self;
     const auto l = decode_linked_chat(body);
     const auto id = hex(l.conversation);
-    if (conversations_.count(id)) return;
+    if (const auto found = conversations_.find(id); found != conversations_.end()) {
+        if (!found->second->removed || found->second->kind == Kind::Self) return;
+        // A copy this device kept when it left (or was taken out): the chat
+        // itself, given again, takes its place.
+        remove_contact(id);
+    }
     bool me = false, giver = false;
     for (const auto& m : l.members) {
         me |= m.device == self_ && m.side == l.side;

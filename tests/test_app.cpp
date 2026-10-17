@@ -100,6 +100,23 @@ struct Host {
                 }
             }
             for (auto& n : app->take_notices()) {
+                // A linked device asks for messages it lacks: given with the keys kept here.
+                if (n.kind == "link_wants") {
+                    std::vector<HistoryItem> items;
+                    std::set<std::string> wanted;
+                    for (std::size_t at = 0; at < n.text.size();) {
+                        const auto end = std::min(n.text.find(',', at), n.text.size());
+                        wanted.insert(n.text.substr(at, end - at));
+                        at = end + 1;
+                    }
+                    for (const auto& i : keyed[n.conversation])
+                        if (wanted.erase(i.message.peer + ":" + std::to_string(i.message.sequence))) items.push_back(i);
+                    if (!items.empty()) {
+                        app->give_history(n.conversation, n.peer, items);
+                        any = true;
+                    }
+                }
+                if (n.kind == "history_item" && !n.key.empty()) keyed[n.conversation].push_back({observation_from(n.data), key_from(n.key)});
                 if (n.kind == "message" || n.kind == "sent") kept[n.conversation].emplace_back(n.data, n.kind == "sent" ? n.body : Bytes{}, n.time);
                 if (n.kind == "retire_key") ratchet_keys.erase(n.text);
                 if ((n.kind == "message" || n.kind == "sent") && !n.key.empty())
@@ -895,6 +912,161 @@ int main() {
         A.app->close_board(c);
         F.app->close_board(c);
         CHECK(!A.app->board(c).open);
+    }
+    // 22. Linked devices (protocol 11): a phone P and a desktop D of one
+    //     person. P talks with C (P invited C: P's side owns the chat) and Q
+    //     (Q invited P). D links to P: it is brought into both by handoff -
+    //     asked of Q's side for Q's chat - given each chat over the self
+    //     conversation with what was said there, each message checked
+    //     against the agreed epochs. New chats and names follow; one that
+    //     was away is filled in; then unlinking, three ways.
+    {
+        Relay lr;
+        Host P(0x81, 0x82, "Pat", &lr), D(0x83, 0x84, "Pat's desktop", &lr), C(0x85, 0x86, "Cy", &lr), Q(0x87, 0x88, "Quin", &lr),
+            E(0x89, 0x8a, "Eli", &lr), T(0x8b, 0x8c, "Pat's tablet", &lr), U(0x8d, 0x8e, "Pat's laptop", &lr);
+        const auto texts = [](const Host& h, const std::string& conv) {
+            std::vector<std::string> out;
+            for (const auto& n : h.notices)
+                if ((n.kind == "message" || n.kind == "history_item" || n.kind == "sent") && n.conversation == conv && n.type == "text")
+                    out.emplace_back(n.body.begin(), n.body.end());
+            std::sort(out.begin(), out.end());
+            return out;
+        };
+        const auto has = [](const Host& h, const std::string& conv) {
+            const auto ids = h.app->conversations();
+            return std::find(ids.begin(), ids.end(), conv) != ids.end() && !h.app->removed(conv);
+        };
+        const auto in = [](const Host& h, const std::string& conv, const Host& who) {
+            for (const auto& m : h.app->members_of(conv))
+                if (m.device == who.device) return true;
+            return false;
+        };
+        CHECK(pair(P, C, InviteKind::Contact, "") == "ok");
+        const auto pc = P.app->conversations()[0];
+        CHECK(pair(Q, P, InviteKind::Contact, "") == "ok");
+        std::string qp;
+        for (const auto& id : P.app->conversations()) if (id != pc) qp = id;
+        P.app->set_delivery(pc, DeliveryMode::Mailbox);
+        Q.app->set_delivery(qp, DeliveryMode::Mailbox);
+        everyone({&P, &C, &Q});
+        for (int i = 0; i < 3; ++i) {
+            P.app->post(pc, "p" + std::to_string(i), P.now);
+            C.app->post(pc, "c" + std::to_string(i), C.now);
+            Q.app->post(qp, "q" + std::to_string(i), Q.now);
+        }
+        everyone({&P, &C, &Q});
+        CHECK(texts(P, pc).size() == 6 && texts(P, qp).size() == 3);
+
+        // Linked: one Link invite, the six words, the same four pictures.
+        CHECK(pair(P, D, InviteKind::Link, "") == "ok");
+        CHECK(!P.app->self_conversation().empty() && P.app->self_conversation() == D.app->self_conversation());
+        CHECK(P.app->linked() == std::vector<std::string>{D.app->peer()} && D.app->linked() == std::vector<std::string>{P.app->peer()});
+        CHECK(P.app->kind_of(P.app->self_conversation()) == Kind::Self);
+        std::string fp, fd;
+        for (const auto& n : P.notices) if (n.kind == "paired" && n.conversation == P.app->self_conversation()) fp = n.text;
+        for (const auto& n : D.notices) if (n.kind == "paired") fd = n.text;
+        CHECK_MSG(!fp.empty() && fp == fd, "both show the same four pictures: " + fp + " / " + fd);
+        everyone({&P, &D, &C, &Q}, 14);
+        CHECK_MSG(has(D, pc) && has(D, qp), "the linked device has both chats");
+        CHECK(in(C, pc, D) && in(Q, qp, D) && in(P, pc, D) && in(P, qp, D));
+        CHECK(C.app->generation_of(pc) == 1 && Q.app->generation_of(qp) == 1 && D.app->generation_of(pc) == 1);
+        // On this person's side: the owner's in P's chat, the friend's in Q's.
+        for (const auto& m : C.app->members_of(pc)) if (m.device == D.device) CHECK(m.side == Side::Owner);
+        for (const auto& m : Q.app->members_of(qp)) if (m.device == D.device) CHECK(m.side == Side::Friend);
+        CHECK(D.app->name_of(pc) == P.app->name_of(pc));
+        CHECK_MSG(texts(D, pc) == texts(P, pc), "what was said, given: " + std::to_string(texts(D, pc).size()));
+        CHECK(texts(D, qp) == texts(P, qp));
+        CHECK(D.count("history_item", pc) == 6 && D.count("history_item", qp) == 3);
+
+        // The linked device talks in it; what is said reaches both of this person's devices.
+        D.app->post(pc, "from the desktop", D.now);
+        C.app->post(pc, "to both", C.now);
+        Q.app->post(qp, "to Pat", Q.now);
+        everyone({&P, &D, &C, &Q});
+        CHECK(!C.said(pc).empty() && !P.said(pc).empty() && C.said(pc).back() == "from the desktop" && P.said(pc).back() == "to both");
+        CHECK(D.said(pc).back() == "to both" && D.said(qp).back() == "to Pat" && P.said(qp).back() == "to Pat");
+        // A forged history item is not taken: only what the agreed epochs name, or a member signed.
+        {
+            auto forged = P.keyed[pc].front();
+            forged.key[0] ^= 1;
+            const auto before = D.count("history_item", pc);
+            P.app->give_history(pc, D.app->peer(), {forged});
+            everyone({&P, &D});
+            CHECK(D.count("history_item", pc) == before);
+        }
+
+        // A new contact made on P is on D from its start; a name follows.
+        CHECK(pair(P, E, InviteKind::Contact, "") == "ok");
+        std::string pe;
+        for (const auto& id : P.app->conversations()) if (id != pc && id != qp && id != P.app->self_conversation()) pe = id;
+        P.app->set_delivery(pe, DeliveryMode::Mailbox);
+        everyone({&P, &D, &E});
+        CHECK_MSG(has(D, pe) && in(E, pe, D) && E.app->generation_of(pe) == 0, "the new contact's chat is on the desktop");
+        E.app->post(pe, "hi Pat", E.now);
+        everyone({&P, &D, &E});
+        CHECK(P.said(pe).back() == "hi Pat" && D.said(pe).back() == "hi Pat");
+        P.app->rename_contact(pe, "Eli from work");
+        everyone({&P, &D});
+        CHECK(D.app->name_of(pe) == "Eli from work");
+        // A group made on P: D in it from its start.
+        const auto pg = P.app->create_group("Pat, Cy, Quin", {pc, qp});
+        everyone({&P, &D, &C, &Q}, 8);
+        CHECK(has(D, pg) && has(C, pg) && has(Q, pg) && in(C, pg, D));
+        P.app->set_delivery(pg, DeliveryMode::Mailbox);
+        everyone({&P, &D, &C, &Q}, 4);
+        C.app->post(pg, "group hello", C.now);
+        everyone({&P, &D, &C, &Q}, 8);
+        CHECK_MSG(P.said(pg) == std::vector<std::string>{"group hello"} && D.said(pg) == std::vector<std::string>{"group hello"},
+                  "a group's message on both: " + std::to_string(P.said(pg).size()) + " " + std::to_string(D.said(pg).size()));
+        CHECK(!D.heard("warning") && !P.heard("warning"));
+
+        // D away; what it missed is lost on the way to it (the relay dropped
+        // its mail). Back, it says what it has; P gives what it lacks.
+        C.app->post(pc, "while away 1", C.now);
+        C.app->post(pc, "while away 2", C.now);
+        everyone({&P, &C});
+        for (const auto& m : D.app->mailboxes()) lr.mailboxes.erase(m);
+        D.now += 400000;
+        everyone({&P, &D, &C}, 8);
+        CHECK_MSG(D.said(pc).size() >= 2 && D.said(pc)[D.said(pc).size() - 1].rfind("while away", 0) == 0, "filled in by the linked device");
+        CHECK(texts(D, pc) == texts(P, pc));
+
+        // Unlink, Keep: D leaves every chat (by handoff; P stays) and keeps a copy to read.
+        D.app->unlink(UnlinkWhat::Keep);
+        everyone({&P, &D, &C, &Q, &E}, 14);
+        CHECK(D.app->self_conversation().empty() && P.app->self_conversation().empty() && P.app->linked().empty());
+        CHECK(P.heard("unlinked") && D.heard("unlinked"));
+        CHECK_MSG(!in(C, pc, D) && !in(Q, qp, D) && !in(E, pe, D) && !in(C, pg, D), "D was taken out of each");
+        CHECK(in(C, pc, P) && C.app->generation_of(pc) == 2);
+        CHECK(D.app->removed(pc) && D.app->left(pc) && D.app->left(qp) && texts(D, pc).size() == texts(P, pc).size());
+        D.app->post(pc, "after", D.now);  // refused here: nothing goes
+        C.app->post(pc, "only Pat now", C.now);
+        everyone({&P, &D, &C});
+        CHECK(P.said(pc).back() == "only Pat now" && D.said(pc).back() != "only Pat now" && C.said(pc).back() != "after");
+
+        // Unlink, Forget: a tablet linked, filled in, then gone - P keeps going without it.
+        CHECK(pair(P, T, InviteKind::Link, "") == "ok");
+        everyone({&P, &T, &C, &Q, &E}, 14);
+        CHECK(has(T, pc) && has(T, qp) && has(T, pe) && has(T, pg) && in(C, pc, T));
+        T.app->unlink(UnlinkWhat::Forget);
+        everyone({&P, &T, &C, &Q, &E}, 14);
+        CHECK(!in(C, pc, T) && !in(Q, qp, T) && P.app->linked().empty());
+        CHECK(T.app->removed(pc) && !T.app->left(pc) && T.heard("left", pc));
+
+        // Split: a laptop linked; the two agree which chats go with which.
+        CHECK(pair(P, U, InviteKind::Link, "") == "ok");
+        everyone({&P, &U, &C, &Q, &E}, 14);
+        CHECK(has(U, pc) && has(U, qp) && has(U, pe));
+        P.app->ask_split({pc, qp, pg}, {pe});
+        everyone({&P, &U});
+        CHECK(U.heard("split_asked") && U.app->split().state == "asking" && U.app->split().mine == std::vector<std::string>{pe});
+        U.app->agree_split();
+        everyone({&P, &U, &C, &Q, &E}, 14);
+        CHECK(P.app->linked().empty() && U.app->linked().empty());
+        CHECK_MSG(in(C, pc, P) && !in(C, pc, U) && in(E, pe, U) && !in(E, pe, P) && !in(Q, qp, U), "each kept its own");
+        E.app->post(pe, "to the laptop", E.now);
+        everyone({&P, &U, &E});
+        CHECK(U.said(pe).back() == "to the laptop");
     }
     // 21. Releases: each signature an engine Observation; a member who signs
     //     two different releases as one version is equivocation, kept in

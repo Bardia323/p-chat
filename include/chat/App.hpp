@@ -502,7 +502,7 @@ private:
     void finished(Conversation& c, const sg::net::Finalization& f);
     void continue_change(Conversation& c);
     void endorse(Conversation& c);
-    void apply_handoff(Conversation& c, const sg::net::Handoff& h, const std::vector<Member>& next);
+    void apply_handoff(Conversation& c, const sg::net::Handoff& h, std::vector<Member> next);  // next: a copy (it may be the change's, which ends)
     void persist_agreement(Conversation& c, const Bytes& journal);
     std::uint64_t since_epoch(const Conversation& c) const;
     Key32 secret_now(const Conversation& c) const;
