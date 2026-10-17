@@ -15,7 +15,8 @@ using Token = std::array<std::uint8_t, 16>;
 
 // Protocol 4 added Channel: a reader of a channel (reusable until cancelled).
 // Protocol 5 added Recovery: a new device for one that was lost.
-enum class InviteKind : std::uint8_t { Contact = 1, ExtraDevice = 2, ReusableDevice = 3, Channel = 4, Recovery = 5 };
+// Protocol 11 added Link: another device of one's own, linked to this one.
+enum class InviteKind : std::uint8_t { Contact = 1, ExtraDevice = 2, ReusableDevice = 3, Channel = 4, Recovery = 5, Link = 6 };
 struct Invite {
     InviteKind kind = InviteKind::Contact;
     Device owner;

@@ -36,6 +36,8 @@ sg::Params contact_add_args(const ConversationId& c, const std::string& name, Si
 sg::Params rename_args(const std::string& name);
 sg::Params contact_remove_args(const ConversationId& c);
 sg::Params device_args(const ConversationId& c, const Member& m, std::uint64_t generation);
+// Several devices one handoff adds or takes out together.
+sg::Params devices_args(const ConversationId& c, const std::vector<Member>& ms, std::uint64_t generation);
 sg::Params post_args(const std::string& kind, const std::string& token);
 sg::Params receive_args(const Key32& device, std::uint64_t sequence, const std::string& kind, int mode = 0);
 sg::Params delivery_args(int mode);

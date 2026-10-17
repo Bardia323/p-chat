@@ -152,6 +152,31 @@ struct App::Conversation {
     };
     std::optional<Change> change;
 
+    // Linked devices (Link.hpp). The handoff that brought in the generation
+    // it is at: what a linked device is given to take it up (the last epoch
+    // before it, the endorsed handoff with the next members, the members before).
+    Bytes join_last, join_ask;
+    std::vector<Member> join_before;
+    // This device is leaving it (unlinked): asked to be taken out, by handoff.
+    bool leaving = false;
+    // The agreed history this device still lacks before the epoch it began
+    // from: the id of the epoch it waits for, going back.
+    sg::net::Digest chain_expect{};
+    bool chain_older = false;
+    // Asked of the owner's side, and when (a device_ask, said again in a while).
+    std::map<std::string, std::uint64_t> asked;
+    // The owner's side: devices its members asked to add or take out, in turn.
+    std::deque<DeviceAsk> asks;
+    // The self conversation's: devices that said they left the link, and a
+    // split of the chats under way.
+    std::set<std::string> unlinked;
+    struct Split {
+        bool mine = false;  // asked by this device
+        std::string with;
+        std::vector<std::string> keeps, gives;  // this device's view
+    };
+    std::optional<Split> split;
+
     const Member* member(const std::string& peer) const {
         for (const auto& m : members)
             if (peer_of(m.device) == peer) return &m;
@@ -253,6 +278,8 @@ void App::rename_contact(const std::string& id, const std::string& name) {
     settle();
     c.name = name;
     dirty_.insert(id);
+    // Named so on this person's other devices too.
+    if (auto* s = self_conv(); s && c.kind != Kind::Self && !siblings().empty()) post_kind(*s, "link_name", encode(LinkName{c.id, name}));
 }
 std::vector<Member> App::members_of(const std::string& c) const { return conv(c).members; }
 bool App::removed(const std::string& c) const { return conv(c).removed; }
@@ -415,6 +442,20 @@ Bytes App::save(const std::string& id) const {
         for (const auto& v : ch.votes) w.raw(encode(v));
         w.long_bytes(ch.invite, 4096).long_bytes(ch.request, 4096).raw(ch.pair_key);
     }
+    // Protocol 11: linked devices (a record without it is read as before).
+    w.u8(11).long_bytes(c.join_last, 1 << 22).long_bytes(c.join_ask, 1 << 22);
+    members_out(w, c.join_before);
+    w.u8(c.leaving ? 1 : 0).raw(c.chain_expect).u8(c.chain_older ? 1 : 0);
+    w.u16(std::uint16_t(c.unlinked.size()));
+    for (const auto& p : c.unlinked) w.short_text(p);
+    w.u8(c.split ? 1 : 0);
+    if (c.split) {
+        w.u8(c.split->mine ? 1 : 0).short_text(c.split->with);
+        for (const auto* list : {&c.split->keeps, &c.split->gives}) {
+            w.u16(std::uint16_t(list->size()));
+            for (const auto& id : *list) w.short_text(id);
+        }
+    }
     return w.take();
 }
 
@@ -528,6 +569,27 @@ void App::load(const Bytes& record) {
         ch.pair_key = r.key();
         c.change = std::move(ch);
     }
+    if (r.left()) {
+        if (r.u8() != 11) throw Refused("chat: a kept conversation's link part");
+        c.join_last = r.long_bytes(1 << 22);
+        c.join_ask = r.long_bytes(1 << 22);
+        c.join_before = members_in(r);
+        c.leaving = r.u8() != 0;
+        c.chain_expect = r.key();
+        c.chain_older = r.u8() != 0;
+        const auto nu = r.u16();
+        for (unsigned i = 0; i < nu; ++i) c.unlinked.insert(r.short_text(128));
+        if (r.u8()) {
+            Conversation::Split sp;
+            sp.mine = r.u8() != 0;
+            sp.with = r.short_text(128);
+            for (auto* list : {&sp.keeps, &sp.gives}) {
+                const auto n = r.u16();
+                for (unsigned i = 0; i < n; ++i) list->push_back(r.short_text(64));
+            }
+            c.split = std::move(sp);
+        }
+    }
     r.end();
     // The agreement as it was left: its predecessor, its next tick and the
     // locks it had cast, read back by the engine (which checks them).
@@ -558,6 +620,7 @@ void App::start() {
     if (started_) return;
     engine_->start();
     started_ = true;
+    have_due_ = true;  // what this device has is said to its linked devices at once
     for (auto& [id, c] : conversations_) connect_members(*c), (void)id;
 }
 
@@ -641,7 +704,21 @@ void App::pump(std::uint64_t now_ms) {
         maybe_propose(*c, false);
         continue_change(*c);
         continue_recovery(*c);
+        // The owner's side takes its members' asks in turn, one change at a time.
+        if (!c->asks.empty() && !c->change && !c->pending && c->side == Side::Owner && proposer_of(c->members) == peer_) {
+            const auto a = c->asks.front();
+            c->asks.pop_front();
+            const auto* there = c->member(peer_of(a.member.device));
+            try {
+                if (a.add && !there) begin_change(*c, true, {a.member});
+                else if (!a.add && there) begin_change(*c, false, {*there});
+            } catch (const std::exception& e) {
+                notices_.push_back({"warning", id, "", std::string("a device asked for was not changed: ") + e.what()});
+            }
+        }
+        pump_leaving(*c);
     }
+    pump_link();
     pump_calls();
     pump_games();
     settle();
@@ -656,6 +733,7 @@ void App::post(const std::string& id, const std::string& text, std::uint64_t tim
         return;
     }
     if (!member_here(id)) throw Refused("chat: only its publisher posts in a channel");
+    if (left(id) || c.leaving) throw Refused("chat: this device left this chat");
     if (text.empty() || text.size() > 200000) throw Refused("chat: a message is 1..200000 bytes");
     const auto token = "t" + std::to_string(next_token_++);
     posts_[token] = {id, "text", Bytes(text.begin(), text.end()), time_ms};
@@ -895,9 +973,12 @@ Opened App::open(const Bytes& envelope, const Key32& shared, const std::optional
         if (!m) return {"refused", c.hexid, "not a device of this conversation"};
         if (frame.kind == FrameKind::Control) {
             if (e.version != Version::Ratchet) return {"refused", c.hexid, "control without version 2"};
+            const auto cid = c.hexid;
             control(c, *m, frame.control);
-            dirty_.insert(c.hexid);
-            return {"control", c.hexid, ""};
+            dirty_.insert(cid);
+            Opened done{"control", cid, ""};
+            done.peer = p;
+            return done;
         }
         const auto& fm = frame.message;
         const auto& o = fm.message;
@@ -930,8 +1011,9 @@ Opened App::open(const Bytes& envelope, const Key32& shared, const std::optional
             if (old != next->own && old != self_.agree) notices_.push_back({"retire_key", c.hexid, p, hex(old)});
         }
         dirty_.insert(c.hexid);
-        const auto out_ = deliver(c, o, content, p, content_key);
+        auto out_ = deliver(c, o, content, p, content_key);
         wipe(content_key);
+        out_.peer = p;
         return out_;
     } catch (const std::exception& ex) {
         out.status = "refused";
@@ -1067,6 +1149,23 @@ void App::accept_message(Conversation& c, const sg::net::Observation& o, const C
             notices_.push_back(n);
         } else if (type == Type::GroupInvite && m && c.kind == Kind::Direct) {
             join_group(c, o, decode_group_invite(content.body));
+        } else if (type == Type::LinkedChat && m && c.kind == Kind::Self && !c.removed) {
+            take_linked(c, o, content.body);
+        } else if (type == Type::DeviceAsk && m && c.kind != Kind::Self) {
+            take_device_ask(c, *m, content.body);
+        } else if (type == Type::Unlink && m && c.kind == Kind::Self && !c.removed) {
+            take_unlink(c, *m, content.body);
+        } else if (type == Type::LinkName && m && c.kind == Kind::Self && !c.removed) {
+            const auto n = decode_link_name(content.body);
+            const auto found = conversations_.find(hex(n.conversation));
+            if (found != conversations_.end() && found->second->kind != Kind::Self) {
+                auto& x = *found->second;
+                engine_->send(x.state, {x.state + ".rename", rename_args(n.name)});
+                settle();
+                x.name = n.name;
+                dirty_.insert(x.hexid);
+                notices_.push_back({"renamed", x.hexid, o.peer, n.name});
+            }
         } else if (type == Type::Rekey && m && m->side == Side::Owner) {
             const auto k = decode_rekey(content.body);
             if (k.secret_generation > c.secrets.back().generation) {
@@ -1381,6 +1480,15 @@ void App::control(Conversation& c, const Member& from, const ControlFrame& f) {
         }
         return;
     }
+    case Control::LinkHave:
+        if (c.kind == Kind::Self && !c.removed && p != peer_) take_have(c, from, f.body);
+        return;
+    case Control::LinkEpochs:
+        if (c.kind == Kind::Self && !c.removed && p != peer_) take_epochs(c, from, f.body);
+        return;
+    case Control::LinkHistory:
+        if (c.kind == Kind::Self && !c.removed && p != peer_) take_link_history(c, from, f.body);
+        return;
     case Control::CallKey:
         call_key_frame(c, from, f.body);
         return;
@@ -1428,10 +1536,9 @@ void App::continue_change(Conversation& c) {
         if (!sg::net::verify_handoff(problem_of(*c.last), c.committee, c.verify(), h)) return;
         const auto body = encode(HandoffAsk{h, ch.next});
         const auto old = c.members;
-        std::vector<Member> told;
-        for (const auto& m : old)
-            if (ch.add || !c.changes(m)) told.push_back(m);
-        send_control(c, Control::HandoffDone, body, {}, &told);
+        // Everyone of the old committee is told - a device taken out too, so
+        // one that asked to leave knows it has.
+        send_control(c, Control::HandoffDone, body, {}, &old);
         const auto change = ch;
         const auto last = *c.last;
         apply_handoff(c, h, ch.next);
@@ -1472,10 +1579,9 @@ void App::continue_change(Conversation& c) {
         for (const auto& m : ch.members) next.push_back(m);
     ch.next = next;
     ch.handoff = draft_handoff(c.last->finalization, c.last->checkpoint, committee_of(c.id, c.generation + 1, next, c.group()));
-    std::vector<Member> asked;
-    for (const auto& m : c.members)
-        if (ch.add || !c.changes(m)) asked.push_back(m);
-    send_control(c, Control::HandoffAsk, encode(HandoffAsk{*ch.handoff, next}), {}, &asked);
+    // Every member endorses - one being taken out too: a device that asked
+    // to leave may be needed for the quorum.
+    send_control(c, Control::HandoffAsk, encode(HandoffAsk{*ch.handoff, next}));
     dirty_.insert(c.hexid);
     endorse(c);
 }
@@ -1527,32 +1633,55 @@ void App::apply_handoff(Conversation& c, const sg::net::Handoff& h, const std::v
     for (const auto& m : c.members)
         if (!after.count(peer_of(m.device))) gone.push_back(m);
     const bool mine = c.change && c.change->mine;
+    const auto asker = c.change ? c.change->asker : std::string();
+    const auto old = c.members;
+    // The handoff that brought this generation in, as a device linked to
+    // this one is given it to take its place here (Link.hpp).
+    c.join_last = encode(*c.last);
+    c.join_ask = encode(HandoffAsk{h, next});
+    c.join_before = old;
     c.agreement = std::make_unique<sg::net::Agreement>(std::move(resumed));
     c.journal = c.agreement->snapshot();
     const auto generation = c.generation + 1;
     set_members(c, generation, next);
     c.change.reset();
+    // The world follows in one edit each way: the generation moves once,
+    // however many devices one handoff brings in or takes out.
+    std::vector<Member> added_here, gone_here;
+    bool me_gone = false;
     for (const auto& m : added)
-        if (peer_of(m.device) != peer_) {
-            engine_->send("contacts", {"device.add", device_args(c.id, m, generation)});
-            settle();
-            notices_.push_back({"device_added", c.hexid, peer_of(m.device), ""});
-        }
+        if (peer_of(m.device) != peer_) added_here.push_back(m);
     for (const auto& m : gone) {
-        const auto p = peer_of(m.device);
-        if (p == peer_) {
-            c.removed = true;
-            continue;
-        }
-        engine_->send("contacts", {"device.revoke", device_args(c.id, m, generation)});
+        if (peer_of(m.device) == peer_) me_gone = true;
+        else gone_here.push_back(m);
+    }
+    if (!added_here.empty()) {
+        engine_->send("contacts", {"device.add", devices_args(c.id, added_here, generation)});
         settle();
-        c.ratchets.erase(p);
-        c.held.erase(p);
-        notices_.push_back({"revoked", c.hexid, p, ""});
+        for (const auto& m : added_here) notices_.push_back({"device_added", c.hexid, peer_of(m.device), ""});
+    }
+    if (!gone_here.empty()) {
+        engine_->send("contacts", {"device.revoke", devices_args(c.id, gone_here, generation)});
+        settle();
+        for (const auto& m : gone_here) {
+            const auto p = peer_of(m.device);
+            c.ratchets.erase(p);
+            c.held.erase(p);
+            notices_.push_back({"revoked", c.hexid, p, ""});
+        }
+    }
+    dirty_.insert(c.hexid);
+    // This device was taken out: the conversation is over here (it asked to
+    // leave, or was revoked). Nothing more is said in it.
+    if (me_gone) {
+        c.removed = true;
+        const bool was_leaving = c.leaving;
+        c.leaving = false;
+        if (was_leaving) notices_.push_back({"left", c.hexid, "", ""});
+        return;
     }
     // The world's generation follows; if no device was added or taken here
     // (this device is the one added), the edit was the pairing's.
-    dirty_.insert(c.hexid);
     ask_starts(c);
     connect_members(c);
     // What this device said after the last epoch is said again, to the next
@@ -1584,9 +1713,28 @@ void App::apply_handoff(Conversation& c, const sg::net::Handoff& h, const std::v
         if (member_here(c.hexid)) ensure_sender_key(c, true);
     }
     // A device taken out takes the conversation's secret with it: a new one,
-    // said under the old (sent_rekey takes it up once it is sealed).
-    if (mine && !gone.empty() && c.side == Side::Owner)
-        post_kind(c, "rekey", encode(RekeyBody{random_key(), c.secrets.back().generation + 1}));
+    // said under the old (sent_rekey takes it up once it is sealed) - by the
+    // owner's side that asked for it, or, when the one that asked was the one
+    // that left, by the owner's side's lowest device that stays.
+    if (!gone.empty() && c.side == Side::Owner) {
+        bool asker_stays = false;
+        for (const auto& m : next) asker_stays |= peer_of(m.device) == asker && m.side == Side::Owner;
+        bool lowest = true;
+        for (const auto& m : next)
+            if (m.side == Side::Owner && peer_of(m.device) < peer_) lowest = false;
+        if (mine || (!asker_stays && lowest)) post_kind(c, "rekey", encode(RekeyBody{random_key(), c.secrets.back().generation + 1}));
+    }
+    // A device linked to this one, brought in: given the chat by the lowest
+    // of this person's devices that were in it before.
+    if (c.kind != Kind::Self)
+        for (const auto& m : added)
+            if (sibling(peer_of(m.device))) {
+                bool lowest = true;
+                for (const auto& b : old)
+                    if (sibling(peer_of(b.device)) && peer_of(b.device) < peer_) lowest = false;
+                if (lowest) give_chat(c);
+                break;
+            }
 }
 
 void App::revoke(const std::string& id, const Key32& device) { remove_devices(id, {device}); }
@@ -1617,7 +1765,11 @@ App::Inviting App::invite(InviteKind kind, const std::string& relay, const std::
     out.invite.relay = relay;
     decode_invite(encode(out.invite));  // the relay address is one a device would accept
     out.code = make_code(random_bytes(9));
-    if (kind != InviteKind::Contact) {
+    if (kind == InviteKind::Link) {
+        // Another device of this person's own: into the self conversation
+        // (made by the pairing if there is none yet).
+        if (const auto* s = self_conv()) out.conversation = s->hexid;
+    } else if (kind != InviteKind::Contact) {
         const auto& c = conv(conversation);
         if (c.side != Side::Owner) throw Refused("chat: only the owner's side invites further devices");
         if ((kind == InviteKind::Channel) != (c.kind == Kind::Channel)) throw Refused("chat: a channel invites readers");
@@ -1646,9 +1798,40 @@ std::string App::take_request(const Inviting& inv, const Bytes& box, const Key32
         ConversationId id{};
         const auto r = random_bytes(16);
         std::copy(r.begin(), r.end(), id.begin());
-        auto& c = make_conversation(id, req.name.empty() ? "New contact" : req.name, Side::Owner, random_key(), 0, 0,
-                                    {{self_, Side::Owner, false}, {req.device, Side::Friend, req.mail}}, req.name);
+        // This person's linked devices are in it from its start, on its side.
+        std::vector<Member> members{{self_, Side::Owner, false}, {req.device, Side::Friend, req.mail}};
+        for (auto m : siblings()) {
+            m.side = Side::Owner;
+            members.push_back(m);
+        }
+        auto& c = make_conversation(id, req.name.empty() ? "New contact" : req.name, Side::Owner, random_key(), 0, 0, members, req.name);
         send_accept(c, inv.invite, req, key, {});
+        if (members.size() > 2) give_chat(c);
+        return "ok";
+    }
+    if (inv.invite.kind == InviteKind::Link) {
+        // Linked devices are one side: the owner's, every one of them, and they take mail.
+        const Member coming{req.device, Side::Owner, true};
+        if (req.device == self_) return "refused";
+        auto* s = self_conv();
+        if (!s) {
+            ConversationId id{};
+            const auto r = random_bytes(16);
+            std::copy(r.begin(), r.end(), id.begin());
+            auto& c = make_conversation(id, "", Side::Owner, random_key(), 0, 0, {{self_, Side::Owner, true}, coming}, "", Kind::Self);
+            engine_->send(c.state, {c.state + ".delivery", delivery_args(int(DeliveryMode::Mailbox))});
+            settle();
+            send_accept(c, inv.invite, req, key, {});
+            notices_.push_back({"linked", c.hexid, peer_of(req.device), ""});
+            have_due_ = true;
+            return "ok";
+        }
+        if (s->member(peer_of(req.device)) || s->change) return "refused";
+        begin_change(*s, true, {coming});
+        s->change->invite = encode(inv.invite);
+        s->change->request = encode(req);
+        s->change->pair_key = key;
+        dirty_.insert(s->hexid);
         return "ok";
     }
     auto& c = conv(inv.conversation);
@@ -1852,6 +2035,41 @@ std::string App::take_accept(const Asking& a, const Bytes& envelope, const Key32
         Notice n{"paired", c.hexid, peer_of(a.invite.owner), emoji_text(fingerprint(id_, device_id(a.invite.owner)))};
         n.type = c.name;
         notices_.push_back(n);
+        dirty_.insert(c.hexid);
+        return "ok";
+    }
+    if (a.invite.kind == InviteKind::Link) {
+        // Linked to another device of this person's own: every member on the
+        // owner's side, this one and the one it linked to among them.
+        bool me = false, owner = false, one_side = true;
+        for (const auto& m : acc.members) {
+            me |= m.device == self_;
+            owner |= m.device == a.invite.owner;
+            one_side &= m.side == Side::Owner;
+        }
+        if (!me || !owner || !one_side) return "the reply does not name this device and the one it is linked to";
+        if (self_conv()) return "this device is linked already: unlink it first";
+        if (conversations_.count(hex(acc.conversation))) return "that conversation is here already";
+        Resumed resumed;
+        if (!acc.trust.empty()) {
+            std::vector<Member> old;
+            for (const auto& m : acc.members)
+                if (!(m.device == self_)) old.push_back(m);
+            resumed = resume_from(acc.trust, acc.conversation, acc.generation, old, acc.members, false);
+            if (!resumed.why.empty()) return resumed.why;
+        } else if (acc.generation != 0) {
+            return "a first device joins at generation 0";
+        }
+        auto& c = make_conversation(acc.conversation, "", Side::Owner, acc.secret, acc.secret_generation, acc.generation, acc.members,
+                                    "", Kind::Self);
+        adopt(c, std::move(resumed));
+        c.epoch_day = day_;
+        engine_->send(c.state, {c.state + ".delivery", delivery_args(int(DeliveryMode::Mailbox))});
+        settle();
+        Notice n{"paired", c.hexid, peer_of(a.invite.owner), emoji_text(fingerprint(id_, device_id(a.invite.owner)))};
+        notices_.push_back(n);
+        notices_.push_back({"linked", c.hexid, peer_of(a.invite.owner), ""});
+        have_due_ = true;
         dirty_.insert(c.hexid);
         return "ok";
     }
@@ -2124,6 +2342,13 @@ std::string App::create_group(const std::string& name, const std::vector<std::st
     if (kind == Kind::Direct) throw Refused("chat: a group or a channel");
     if (name.empty() || name.size() > 64) throw Refused("chat: a name is 1..64 bytes");
     std::vector<Member> members{{self_, Side::Owner, false}};
+    // A group's maker's linked devices are in it from its start, on its side
+    // (a channel is posted to from the device that made it; the others read it).
+    if (kind == Kind::Group)
+        for (auto m : siblings()) {
+            m.side = Side::Owner;
+            members.push_back(m);
+        }
     if (kind == Kind::Group)
         for (const auto& cid : contacts) {
             const auto& d = conv(cid);
@@ -2142,6 +2367,7 @@ std::string App::create_group(const std::string& name, const std::vector<std::st
     ensure_sender_key(c, true);
     if (kind == Kind::Group)
         for (const auto& cid : contacts) send_group_invite(c, cid, {}, {});
+    if (kind == Kind::Group && !siblings().empty()) give_chat(c);
     notices_.push_back({kind == Kind::Group ? "group" : "channel", c.hexid, "", name});
     return c.hexid;
 }
@@ -2178,6 +2404,8 @@ void App::add_to_group(const std::string& group, const std::string& contact) {
 // A group invite, said in a direct conversation by one of its own side:
 // the group as it is, and if it is not at its start, the handoff to take up.
 void App::join_group(Conversation& direct, const sg::net::Observation& from, const GroupInvite& gi) {
+    // One of this person's own devices made it: it comes as a linked chat.
+    if (sibling(from.peer)) return;
     bool me = false, owner = false;
     for (const auto& m : gi.members) {
         me |= m.device == self_ && m.side == Side::Friend;
@@ -3638,6 +3866,663 @@ std::vector<std::string> App::live_peers() const {
         }
     }
     return {out.begin(), out.end()};
+}
+
+// ---- linked devices (protocol 11, Link.hpp) ------------------------------------
+
+App::Conversation* App::self_conv() {
+    for (auto& [id, c] : conversations_)
+        if (c->kind == Kind::Self && !c->removed) return c.get();
+    return nullptr;
+}
+const App::Conversation* App::self_conv() const {
+    for (const auto& [id, c] : conversations_)
+        if (c->kind == Kind::Self && !c->removed) return c.get();
+    return nullptr;
+}
+std::string App::self_conversation() const {
+    const auto* s = self_conv();
+    return s ? s->hexid : std::string();
+}
+// This person's other devices: the self conversation's other members, but a
+// device that said it left the link (its handoff out may still be under way).
+std::vector<Member> App::siblings() const {
+    const auto* s = self_conv();
+    if (!s || !s->committee.key(peer_)) return {};
+    std::vector<Member> out;
+    for (const auto& m : s->members) {
+        const auto p = peer_of(m.device);
+        if (p != peer_ && !s->unlinked.count(p)) out.push_back(m);
+    }
+    return out;
+}
+bool App::sibling(const std::string& peer) const {
+    for (const auto& m : siblings())
+        if (peer_of(m.device) == peer) return true;
+    return false;
+}
+std::vector<std::string> App::linked() const {
+    std::vector<std::string> out;
+    for (const auto& m : siblings()) out.push_back(peer_of(m.device));
+    return out;
+}
+void App::set_relay(const std::string& id, const std::string& url) {
+    if (url.size() > 512) throw Refused("chat: a relay address is at most 512 bytes");
+    relays_[id] = url;
+}
+bool App::left(const std::string& id) const {
+    return graph_.state(conv(id).state).params().get_or<std::int64_t>("left", 0) == 1;
+}
+bool App::leaving(const std::string& id) const { return conv(id).leaving; }
+
+// Every chat a linked device is not in yet, it is brought into, on this
+// person's side - by the lowest of this person's devices in it, so one asks.
+// What this device has is said to each linked device now and then, so the
+// one that has more fills in the other.
+void App::pump_link() {
+    if (!started_ || !self_conv()) return;
+    const auto sibs = siblings();
+    if (sibs.empty()) return;
+    for (const auto& m : sibs) {
+        const auto p = peer_of(m.device);
+        const bool live = live_with(p);
+        const bool came = live && !sibling_live_.count(p);
+        if (live) sibling_live_.insert(p);
+        else sibling_live_.erase(p);
+        const auto at = have_sent_.find(p);
+        if (have_due_ || came || at == have_sent_.end() || now_ >= at->second + 300000) send_have(p);
+    }
+    have_due_ = false;
+    for (auto& [id, cp] : conversations_) {
+        auto& c = *cp;
+        if (c.kind == Kind::Self || c.kind == Kind::Channel || c.removed || c.leaving || left(id) || !member_here(id)) continue;
+        std::vector<Member> missing;
+        bool lowest = true;
+        for (const auto& m : sibs) {
+            const auto p = peer_of(m.device);
+            if (!c.member(p)) missing.push_back(m);
+            else if (p < peer_) lowest = false;
+        }
+        if (missing.empty() || !lowest || c.change || c.pending) continue;
+        for (auto& m : missing) m.side = c.side;
+        if (c.side == Side::Owner) {
+            if (!c.group()) missing.resize(1);
+            try {
+                begin_change(c, true, missing);
+            } catch (const std::exception& e) {
+                notices_.push_back({"warning", id, "", std::string("a linked device was not brought in: ") + e.what()});
+            }
+            continue;
+        }
+        // The other side's: asked to bring it in (said again in ten minutes, if nothing came of it).
+        for (const auto& m : missing) {
+            auto& at = c.asked[peer_of(m.device)];
+            if (at && now_ < at + 600000) continue;
+            at = std::max<std::uint64_t>(now_, 1);
+            post_kind(c, "device_ask", encode(DeviceAsk{true, m}));
+        }
+    }
+}
+
+// Leaving a chat (unlinked): taken out by handoff - proposed here on the
+// owner's side, asked of the owner's side on the other - while a device of
+// this person stays in it.
+void App::pump_leaving(Conversation& c) {
+    if (!c.leaving || c.removed || !member_here(c.hexid)) return;
+    const auto* me = c.member(peer_);
+    if (c.side == Side::Owner) {
+        if (c.change || c.pending) return;
+        try {
+            begin_change(c, false, {*me});
+        } catch (const std::exception& e) {
+            notices_.push_back({"warning", c.hexid, "", std::string("this device could not leave: ") + e.what()});
+            c.leaving = false;
+        }
+        return;
+    }
+    auto& at = c.asked[peer_];
+    if (at && now_ < at + 600000) return;
+    at = std::max<std::uint64_t>(now_, 1);
+    post_kind(c, "device_ask", encode(DeviceAsk{false, *me}));
+}
+
+// A chat, given to this person's linked devices over the self conversation.
+void App::give_chat(Conversation& c) {
+    auto* s = self_conv();
+    if (!s || c.kind == Kind::Self) return;
+    LinkedChat l;
+    l.conversation = c.id;
+    l.kind = c.kind;
+    l.side = c.side;
+    l.secret = secret_now(c);
+    l.secret_generation = c.secrets.back().generation;
+    l.name = name_of(c.hexid);
+    l.introduced = introduced_as(c.hexid);
+    if (l.introduced.size() > 64) l.introduced.clear();
+    const auto relay = relays_.find(c.hexid);
+    if (relay != relays_.end()) l.relay = relay->second;
+    const auto o = options_of(c.hexid);
+    l.no_recovery = o.no_recovery;
+    l.disappear_s = o.disappear_s;
+    if (c.kind == Kind::Channel) {
+        // A channel is given to read: its key from now on, and whose it is.
+        l.side = Side::Friend;
+        l.generation = c.generation;
+        l.members = c.members;
+        std::optional<std::pair<std::string, SenderKey>> key;
+        if (member_here(c.hexid) && c.own_key) key = {peer_, *c.own_key};
+        for (const auto& [p, k] : c.their_keys)
+            if (!key) key = {p, k.key};
+        if (!key) return;
+        l.trust = Writer().u8(2).short_bytes(encode(key->second)).raw(key_from_hex(key->first)).take();
+    } else if (!c.join_ask.empty()) {
+        const auto ask = decode_handoff_ask(c.join_ask);
+        l.generation = ask.handoff.next.generation;
+        l.members = ask.next;
+        l.before = c.join_before;
+        l.trust = Writer().u8(1).long_bytes(c.join_last, 1 << 22).long_bytes(encode(ask.handoff), 1 << 22).take();
+    } else if (c.generation == 0) {
+        l.generation = 0;
+        l.members = c.members;
+    } else {
+        return;  // at a generation no handoff here brought in (a recovery's): nothing a linked device could check
+    }
+    post_kind(*s, "linked_chat", encode(l));
+}
+
+// A chat given by a linked device: taken as a further device takes its
+// accept - the handoff that brought this device in checked against the old
+// committee - or, from its start, as a group's member takes its invite.
+void App::take_linked(Conversation& self, const sg::net::Observation& o, const Bytes& body) {
+    (void)self;
+    const auto l = decode_linked_chat(body);
+    const auto id = hex(l.conversation);
+    if (conversations_.count(id)) return;
+    bool me = false, giver = false;
+    for (const auto& m : l.members) {
+        me |= m.device == self_ && m.side == l.side;
+        giver |= peer_of(m.device) == o.peer && m.side == l.side;
+    }
+    if (l.kind == Kind::Channel) {
+        if (l.trust.empty() || l.trust[0] != 2) return;
+        Reader r(l.trust);
+        r.u8();
+        const auto key = decode_sender_key(r.short_bytes());
+        const auto speaker = r.key();
+        r.end();
+        bool publisher = false;
+        for (const auto& m : l.members) publisher |= device_id(m.device) == speaker && m.side == Side::Owner;
+        if (!publisher) return;
+        auto& c = make_conversation(l.conversation, l.name.empty() ? "Channel" : l.name, Side::Friend, l.secret, l.secret_generation,
+                                    l.generation, l.members, l.introduced, Kind::Channel);
+        c.their_keys[hex(speaker)] = SenderChain{key, {}};
+        relays_[id] = l.relay;
+        index_mailboxes();
+        Notice n{"linked_chat", id, o.peer, l.relay};
+        n.type = l.name;
+        notices_.push_back(n);
+        dirty_.insert(id);
+        return;
+    }
+    // Only a chat this device is in, from one of this person's devices in it.
+    if (!me) return;
+    if (!giver) {
+        notices_.push_back({"warning", "", o.peer, "A chat given by a linked device that is not in it was refused."});
+        return;
+    }
+    Resumed resumed;
+    if (!l.trust.empty()) {
+        if (l.trust[0] != 1) return;
+        resumed = resume_from(l.trust, l.conversation, l.generation, l.before, l.members, l.kind == Kind::Group);
+        if (!resumed.why.empty()) {
+            notices_.push_back({"warning", "", o.peer, "A chat given by a linked device was refused: " + resumed.why});
+            return;
+        }
+    } else if (l.generation != 0) {
+        return;
+    }
+    auto& c = make_conversation(l.conversation, l.name.empty() ? "Chat" : l.name, l.side, l.secret, l.secret_generation, l.generation,
+                                l.members, l.introduced, l.kind);
+    const std::optional<Finalized> head = resumed.last;
+    adopt(c, std::move(resumed));
+    c.epoch_day = day_;
+    if (head) {
+        // The epoch the handoff extends is agreed; those before it are asked
+        // for, each checked against the one after it.
+        for (const auto& i : decode_history(head->statement.payload).ids) c.agreed_ids.insert(i);
+        c.epochs.push_back(encode(*head));
+        c.chain_expect = head->context.previous;
+        c.chain_older = c.chain_expect != sg::net::Digest{};
+    }
+    if (l.no_recovery || l.disappear_s) {
+        engine_->send(c.state, {c.state + ".options", options_args(!l.no_recovery, l.disappear_s)});
+        settle();
+    }
+    const auto* s = self_conv();
+    const auto* mine = s ? s->member(peer_) : nullptr;
+    if (mine && mine->mail) {
+        engine_->send(c.state, {c.state + ".delivery", delivery_args(int(DeliveryMode::Mailbox))});
+        settle();
+    }
+    if (c.kind == Kind::Group) ensure_sender_key(c, true);
+    relays_[id] = l.relay;
+    Notice n{"linked_chat", id, o.peer, l.relay};
+    n.type = l.name;
+    notices_.push_back(n);
+    dirty_.insert(id);
+    // What was said in it, asked of the one that gave it.
+    send_have(o.peer, {id});
+}
+
+// A member asks the owner's side to change its own devices: a device linked
+// to it, added on its side; or itself, taken out. Taken in turn by the owner's
+// side's proposer (pump), by handoff - which the old quorum endorses as ever.
+void App::take_device_ask(Conversation& c, const Member& from, const Bytes& body) {
+    const auto a = decode_device_ask(body);
+    if (c.side != Side::Owner || c.kind == Kind::Channel || c.removed || !member_here(c.hexid)) return;
+    auto m = a.member;
+    if (a.add) {
+        if (c.member(peer_of(m.device))) return;
+        m.side = from.side;
+    } else {
+        // Only itself: a member leaves; it does not take out another.
+        if (!(m.device == from.device)) return;
+        m = from;
+        // A side of two is not left empty: that is the chat ending, not a device leaving it.
+        bool other = false;
+        for (const auto& x : c.members) other |= x.side == from.side && !(x.device == from.device);
+        if (!other) return;
+    }
+    for (const auto& had : c.asks)
+        if (had.add == a.add && had.member.device == m.device) return;
+    if (c.asks.size() >= 64) return;
+    c.asks.push_back({a.add, m});
+    notices_.push_back({a.add ? "device_asked" : "device_leaving", c.hexid, peer_of(from.device), peer_of(m.device)});
+}
+
+// What a linked device says of the link: it left it (forgetting or keeping
+// what it had), or asks, agrees to or refuses a split of the chats.
+void App::take_unlink(Conversation& self, const Member& from, const Bytes& body) {
+    const auto u = decode_unlink(body);
+    const auto p = peer_of(from.device);
+    const auto ids = [](const std::vector<ConversationId>& list) {
+        std::vector<std::string> out;
+        for (const auto& id : list) out.push_back(hex(id));
+        return out;
+    };
+    switch (u.what) {
+    case UnlinkWhat::Forget:
+    case UnlinkWhat::Keep: {
+        self.unlinked.insert(p);
+        self.split.reset();
+        dirty_.insert(self.hexid);
+        notices_.push_back({"unlinked_peer", self.hexid, p, u.what == UnlinkWhat::Forget ? "forget" : "keep"});
+        // The link was the two of them: it is over. More stay linked: it goes
+        // out of their self conversation by handoff.
+        if (siblings().empty()) end_link("unlinked");
+        else if (self.side == Side::Owner && proposer_of(self.members) == peer_ && !self.change) {
+            const auto* m = self.member(p);
+            if (m) self.asks.push_back({false, *m});
+        }
+        return;
+    }
+    case UnlinkWhat::SplitAsk: {
+        if (self.members.size() != 2) return;
+        self.split = Conversation::Split{false, p, ids(u.gives), ids(u.keeps)};
+        dirty_.insert(self.hexid);
+        notices_.push_back({"split_asked", self.hexid, p, ""});
+        return;
+    }
+    case UnlinkWhat::SplitAgree: {
+        if (!self.split || !self.split->mine || self.split->with != p) return;
+        if (ids(u.keeps) != self.split->gives || ids(u.gives) != self.split->keeps) return;
+        const auto gives = self.split->gives;
+        leave_all(UnlinkWhat::SplitAgree, &gives);
+        end_link("split");
+        return;
+    }
+    case UnlinkWhat::SplitRefuse:
+        if (self.split && self.split->with == p) {
+            self.split.reset();
+            dirty_.insert(self.hexid);
+            notices_.push_back({"split_refused", self.hexid, p, ""});
+        }
+        return;
+    }
+}
+
+void App::unlink(UnlinkWhat what) {
+    auto* s = self_conv();
+    if (!s) throw Refused("chat: this device is not linked");
+    if (what != UnlinkWhat::Forget && what != UnlinkWhat::Keep) throw Refused("chat: unlink forgets or keeps; a split is asked");
+    post_kind(*s, "unlink", encode(Unlink{what, {}, {}}));
+    leave_all(what);
+    end_link(what == UnlinkWhat::Forget ? "forget" : "keep");
+}
+void App::ask_split(const std::vector<std::string>& mine, const std::vector<std::string>& theirs) {
+    auto* s = self_conv();
+    if (!s) throw Refused("chat: this device is not linked");
+    if (s->members.size() != 2) throw Refused("chat: a split is between two linked devices");
+    if (s->split) throw Refused("chat: a split is asked already");
+    std::vector<ConversationId> keeps, gives;
+    std::set<std::string> seen;
+    for (const auto* list : {&mine, &theirs})
+        for (const auto& id : *list) {
+            const auto& c = conv(id);
+            if (c.kind == Kind::Self || !seen.insert(id).second) throw Refused("chat: each chat goes one way");
+            (list == &mine ? keeps : gives).push_back(c.id);
+        }
+    const auto sibs = siblings();
+    if (sibs.size() != 1) throw Refused("chat: a split is between two linked devices");
+    s->split = Conversation::Split{true, peer_of(sibs[0].device), mine, theirs};
+    dirty_.insert(s->hexid);
+    post_kind(*s, "unlink", encode(Unlink{UnlinkWhat::SplitAsk, keeps, gives}));
+}
+void App::agree_split() {
+    auto* s = self_conv();
+    if (!s || !s->split || s->split->mine) throw Refused("chat: no split asked of this device");
+    Unlink u{UnlinkWhat::SplitAgree, {}, {}};
+    for (const auto& id : s->split->keeps) u.keeps.push_back(conversation_of(id));
+    for (const auto& id : s->split->gives) u.gives.push_back(conversation_of(id));
+    post_kind(*s, "unlink", encode(u));
+    const auto gives = s->split->gives;
+    leave_all(UnlinkWhat::SplitAgree, &gives);
+    end_link("split");
+}
+void App::refuse_split() {
+    auto* s = self_conv();
+    if (!s || !s->split) return;
+    s->split.reset();
+    dirty_.insert(s->hexid);
+    post_kind(*s, "unlink", encode(Unlink{UnlinkWhat::SplitRefuse, {}, {}}));
+}
+App::SplitView App::split() const {
+    SplitView v;
+    const auto* s = self_conv();
+    if (!s || !s->split) return v;
+    v.state = s->split->mine ? "asked" : "asking";
+    v.with = s->split->with;
+    v.mine = s->split->keeps;
+    v.theirs = s->split->gives;
+    return v;
+}
+
+// Leaving the chats this device shares with its linked devices (all, or
+// those a split gives the other): by handoff, they stay. Keep: what was said
+// stays here to read; the world says so (`left`).
+void App::leave_all(UnlinkWhat what, const std::vector<std::string>* only) {
+    const auto sibs = siblings();
+    for (auto& [id, cp] : conversations_) {
+        auto& c = *cp;
+        if (c.kind == Kind::Self || c.removed) continue;
+        if (only && std::find(only->begin(), only->end(), id) == only->end()) continue;
+        if (what == UnlinkWhat::Keep) {
+            engine_->send(c.state, {c.state + ".leave", {}});
+            settle();
+        }
+        bool shared = false;
+        for (const auto& m : sibs) shared |= c.member(peer_of(m.device)) != nullptr;
+        if (c.kind == Kind::Channel || !member_here(id) || !shared) {
+            // Nothing to leave by handoff (a channel read here; a chat no
+            // linked device is in): it ends here.
+            c.removed = true;
+            notices_.push_back({"left", id, "", ""});
+        } else {
+            c.leaving = true;
+        }
+        dirty_.insert(id);
+    }
+    index_mailboxes();
+}
+void App::end_link(const std::string& why) {
+    auto* s = self_conv();
+    if (!s) return;
+    s->split.reset();
+    s->removed = true;
+    engine_->send(s->state, {s->state + ".leave", {}});
+    settle();
+    dirty_.insert(s->hexid);
+    sibling_live_.clear();
+    notices_.push_back({"unlinked", s->hexid, "", why});
+}
+
+// What this device has of its chats, said to a linked device: the one that
+// has more gives it what it lacks.
+void App::send_have(const std::string& peer, const std::vector<std::string>& only) {
+    auto* s = self_conv();
+    if (!s) return;
+    have_sent_[peer] = std::max<std::uint64_t>(now_, 1);
+    LinkHave h;
+    h.all = only.empty();
+    std::size_t size = 0;
+    const auto flush = [&] {
+        send_control(*s, Control::LinkHave, encode(h), peer);
+        h.chats.clear();
+        size = 0;
+    };
+    for (const auto& [id, c] : conversations_) {
+        if (c->kind == Kind::Self || c->removed || c->leaving) continue;
+        if (!only.empty() && std::find(only.begin(), only.end(), id) == only.end()) continue;
+        LinkHave::Chat ch;
+        ch.conversation = c->id;
+        ch.generation = c->generation;
+        ch.next_tick = c->agreement ? c->agreement->next_tick() : 0;
+        ch.older = c->chain_older;
+        for (auto& [sender, runs] : runs_of(c->log))
+            if (ch.held.size() < 256) ch.held.emplace(sender, std::move(runs));
+        std::size_t n = 16 + 17 + 2;
+        for (const auto& [sender, runs] : ch.held) n += 34 + 16 * runs.size();
+        if (size + n > 150000 || h.chats.size() == 1024) flush();
+        h.chats.push_back(std::move(ch));
+        size += n;
+    }
+    // Said even when it has nothing: a device with no chats lacks them all.
+    flush();
+}
+
+// A linked device said what it has: what it lacks is given - a chat it is
+// not in yet (given again, at most every ten minutes), the epochs that let it
+// check what it is given, and, asked of the host (which keeps the keys), the
+// messages it misses.
+void App::take_have(Conversation& self, const Member& from, const Bytes& body) {
+    (void)self;
+    const auto p = peer_of(from.device);
+    if (!sibling(p)) return;
+    // The same said again (a control frame is said again a while) is answered once in five minutes.
+    const auto digest = blake2b256(Bytes{}, body);
+    auto& heard = have_heard_[p];
+    if (heard.first == digest && now_ < heard.second + 300000) return;
+    heard = {digest, std::max<std::uint64_t>(now_, 1)};
+    const auto h = decode_link_have(body);
+    std::map<std::string, const LinkHave::Chat*> listed;
+    for (const auto& ch : h.chats) listed[hex(ch.conversation)] = &ch;
+    for (auto& [id, cp] : conversations_) {
+        auto& c = *cp;
+        if (c.kind == Kind::Self || c.removed || c.leaving) continue;
+        const auto at = listed.find(id);
+        if (at == listed.end()) {
+            if (!h.all || (c.kind != Kind::Channel && !c.member(p))) continue;
+            auto& given = given_[id + p];
+            if (given && now_ < given + 600000) continue;
+            given = std::max<std::uint64_t>(now_, 1);
+            give_chat(c);
+            continue;
+        }
+        const auto& ch = *at->second;
+        if (c.kind == Kind::Channel) continue;
+        // The epochs: older than where it began (newest first), when it
+        // still lacks them; and those after where it stands, with the
+        // handoff to this generation when it is one behind.
+        std::vector<Bytes> older, newer;
+        for (const auto& e : c.epochs) {
+            try {
+                const auto f = decode_finalized(e);
+                if (f.context.tick < ch.next_tick) {
+                    if (ch.older) older.push_back(e);
+                } else {
+                    newer.push_back(e);
+                }
+            } catch (const std::exception&) {
+            }
+        }
+        std::reverse(older.begin(), older.end());
+        std::optional<HandoffAsk> handoff;
+        if (ch.generation + 1 == c.generation && !c.join_ask.empty()) handoff = decode_handoff_ask(c.join_ask);
+        const auto send = [&](std::vector<Bytes> list, bool with_handoff) {
+            LinkEpochs le;
+            le.conversation = c.id;
+            std::size_t size = 0;
+            for (auto& e : list) {
+                if (size + e.size() > 180000 && !le.epochs.empty()) {
+                    send_control(self, Control::LinkEpochs, encode(le), p);
+                    le.epochs.clear();
+                    size = 0;
+                }
+                size += e.size();
+                le.epochs.push_back(std::move(e));
+            }
+            if (with_handoff) le.handoff = handoff;
+            if (!le.epochs.empty() || le.handoff) send_control(self, Control::LinkEpochs, encode(le), p);
+        };
+        if (!older.empty()) send(older, false);
+        if (!newer.empty() || handoff) send(newer, handoff.has_value());
+        // The messages it lacks, by sender and sequence.
+        std::string wants;
+        std::set<std::pair<std::string, std::uint64_t>> seen;
+        for (const auto& o : c.log) {
+            if (o.parameter != "text" && o.parameter != "file" && o.parameter != "stroke") continue;
+            if (holds(ch.held, key_from_hex(o.peer), o.sequence) || !seen.insert({o.peer, o.sequence}).second) continue;
+            if (!wants.empty()) wants += ',';
+            wants += o.peer + ":" + std::to_string(o.sequence);
+        }
+        if (!wants.empty()) notices_.push_back({"link_wants", id, p, wants});
+    }
+}
+
+// Epochs a linked device gave: each taken only as it checks - one going back
+// from the epoch this device began from, or one after where it stands (the
+// engine's Agreement takes it, with its quorum's attestations); and the
+// handoff to the next generation, verified against the old committee.
+void App::take_epochs(Conversation& self, const Member& from, const Bytes& body) {
+    (void)self;
+    if (!sibling(peer_of(from.device))) return;
+    const auto e = decode_link_epochs(body);
+    const auto found = conversations_.find(hex(e.conversation));
+    if (found == conversations_.end() || found->second->removed || found->second->kind == Kind::Channel) return;
+    auto& c = *found->second;
+    std::vector<Finalized> fs;
+    for (const auto& b : e.epochs) try { fs.push_back(decode_finalized(b)); } catch (const std::exception&) {}
+    const auto take = [&] {
+        for (bool moved = true; moved;) {
+            moved = false;
+            for (const auto& f : fs) {
+                if (c.chain_older && epoch_before(f, c.chain_expect)) {
+                    for (const auto& i : decode_history(f.statement.payload).ids) c.agreed_ids.insert(i);
+                    c.epochs.insert(c.epochs.begin(), encode(f));
+                    c.chain_expect = f.context.previous;
+                    c.chain_older = c.chain_expect != sg::net::Digest{} && c.chain_expect != c.chain_root;
+                    moved = true;
+                } else if (catch_up(c, f)) {
+                    moved = true;
+                }
+            }
+        }
+    };
+    take();
+    if (e.handoff && c.last && !(c.change && c.change->endorsed && c.change->mine)) {
+        const auto& h = e.handoff->handoff;
+        if (h.next.generation == c.generation + 1 && sg::net::verify_handoff(problem_of(*c.last), c.committee, c.verify(), h) &&
+            h.next.id() == committee_of(c.id, c.generation + 1, e.handoff->next, c.group()).id()) {
+            apply_handoff(c, h, e.handoff->next);
+            take();
+        }
+    }
+    dirty_.insert(c.hexid);
+}
+bool App::catch_up(Conversation& c, const Finalized& f) {
+    if (!c.agreement || f.context.tick != c.agreement->next_tick() || f.context.previous != c.agreement->previous() ||
+        f.context.committee != c.committee.id())
+        return false;
+    try {
+        if (!c.agreement->accept(problem_of(f), c.verify(), f.finalization)) return false;
+    } catch (const std::exception&) {
+        return false;
+    }
+    c.last = f;
+    c.epochs.push_back(encode(f));
+    c.cutoffs = checkpoint_cutoffs(f.checkpoint);
+    c.epoch_day = day_;
+    c.run.reset();
+    c.early.clear();
+    for (const auto& i : decode_history(f.statement.payload).ids) c.agreed_ids.insert(i);
+    Notice n{"history", c.hexid, "", ""};
+    n.sequence = f.context.tick;
+    notices_.push_back(n);
+    return true;
+}
+
+// Messages a linked device gave: each taken only as it checks. One said
+// under the generation this device is in is a message like any other - its
+// sender's signature, Integrity, the window. An older one, only if the
+// chat's agreed epochs name it (as a recovered device's history).
+void App::take_link_history(Conversation& self, const Member& from, const Bytes& body) {
+    (void)self;
+    if (!sibling(peer_of(from.device))) return;
+    const auto h = decode_link_history(body);
+    const auto found = conversations_.find(hex(h.conversation));
+    if (found == conversations_.end() || found->second->removed || found->second->kind == Kind::Channel) return;
+    auto& c = *found->second;
+    std::set<sg::net::Digest> logged;
+    for (const auto& o : c.log) logged.insert(o.id());
+    for (const auto& item : h.items) {
+        try {
+            const auto& o = item.message;
+            if (logged.count(o.id())) continue;
+            if (o.tick == c.generation) {
+                check_message(o, c.id, c.generation);
+                const auto content = open_content(item.key, o);
+                deliver(c, o, content, o.peer, item.key);
+                continue;
+            }
+            if (!c.agreed_ids.count(o.id())) continue;
+            check_message(o, c.id, o.tick);
+            const auto content = open_content(item.key, o);
+            c.log.push_back(o);
+            logged.insert(o.id());
+            Notice n{"history_item", c.hexid, o.peer, ""};
+            n.sequence = o.sequence;
+            n.time = content.time_ms;
+            n.type = o.parameter;
+            n.data = observation_bytes(o);
+            n.body = content.body;
+            n.key = Bytes(item.key.begin(), item.key.end());
+            notices_.push_back(n);
+        } catch (const std::exception&) {
+        }
+    }
+    dirty_.insert(c.hexid);
+}
+
+void App::give_history(const std::string& id, const std::string& peer, const std::vector<HistoryItem>& items) {
+    auto* s = self_conv();
+    const auto& c = conv(id);
+    if (!s || !sibling(peer)) throw Refused("chat: history goes to a linked device");
+    constexpr std::size_t most = 200000;
+    LinkHistory part{c.id, {}};
+    std::size_t size = 0;
+    for (const auto& i : items) {
+        if (i.message.object != c.hexid) continue;
+        const auto n = observation_bytes(i.message).size() + 40;
+        if (n > most) continue;
+        if (size + n > most || part.items.size() == 4096) {
+            send_control(*s, Control::LinkHistory, encode(part), peer);
+            part.items.clear();
+            size = 0;
+        }
+        part.items.push_back(i);
+        size += n;
+    }
+    if (!part.items.empty()) send_control(*s, Control::LinkHistory, encode(part), peer);
 }
 
 }  // namespace chat

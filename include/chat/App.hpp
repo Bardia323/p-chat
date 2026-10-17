@@ -15,6 +15,7 @@
 // test keys; web/session.js is it in a browser.
 #pragma once
 #include "chat/Group.hpp"
+#include "chat/Link.hpp"
 #include "chat/Recovery.hpp"
 #include "chat/Push.hpp"
 #include "chat/Swarm.hpp"
@@ -83,6 +84,7 @@ struct Notice {
 struct Opened {
     std::string status;  // accepted, duplicate, equivocation, refused, need_turn, control, unknown
     std::string conversation, why;
+    std::string peer;  // the device it came from, when it is one of the conversation's
     Key32 own{}, dh{};
 };
 // Pairing as the new device: what it holds between asking and the answer.
@@ -373,6 +375,37 @@ public:
     // The devices a live link is up with now.
     std::vector<std::string> live_peers() const;
 
+    // ---- linked devices (protocol 11, Link.hpp) ----
+    // This person's other devices, linked to this one: the members of the
+    // self conversation (a Link invite makes it, or brings one more in).
+    // Every chat one of them is in, the others are brought into; each keeps
+    // the others' chat list and fills in what one missed.
+    std::string self_conversation() const;  // its id, or empty
+    std::vector<std::string> linked() const;
+    // Where a chat's relay is (the host's to say): told to a linked device
+    // with the chat, so it reaches the same one.
+    void set_relay(const std::string& conversation, const std::string& url);
+    // A linked device asked for these of a chat's messages (notice
+    // `link_wants`): the host gives each with its key, as it kept them.
+    void give_history(const std::string& conversation, const std::string& peer, const std::vector<HistoryItem>& items);
+    // Unlinking. Forget or Keep: this device leaves every chat it shares with
+    // its linked devices (by handoff; they stay) and the link ends - Keep
+    // leaves it a copy to read. Split: this device and the other agree which
+    // chats go with which (each confirms); each then leaves the other's.
+    void unlink(UnlinkWhat what);
+    void ask_split(const std::vector<std::string>& mine, const std::vector<std::string>& theirs);
+    void agree_split();
+    void refuse_split();
+    // "asked <peer>" (this device asked) / "asking <peer>" (the other did) and
+    // the chats that stay here and go there; empty when none.
+    struct SplitView {
+        std::string state, with;
+        std::vector<std::string> mine, theirs;
+    };
+    SplitView split() const;
+    bool left(const std::string& conversation) const;     // a copy kept to read, no longer written in
+    bool leaving(const std::string& conversation) const;  // being left (its handoff under way)
+
 private:
     struct Conversation;
     Device self_;
@@ -502,6 +535,31 @@ private:
     void index_mailboxes();
     std::map<Key32, std::string> mailbox_index_;
     std::uint32_t indexed_day_ = 0;
+
+    // Linked devices (Link.hpp).
+    Conversation* self_conv();
+    const Conversation* self_conv() const;
+    std::vector<Member> siblings() const;
+    bool sibling(const std::string& peer) const;
+    void pump_link();
+    void pump_leaving(Conversation& c);
+    void give_chat(Conversation& c);
+    void take_linked(Conversation& self, const sg::net::Observation& o, const Bytes& body);
+    void take_device_ask(Conversation& c, const Member& from, const Bytes& body);
+    void take_unlink(Conversation& self, const Member& from, const Bytes& body);
+    void send_have(const std::string& peer, const std::vector<std::string>& only = {});
+    void take_have(Conversation& self, const Member& from, const Bytes& body);
+    void take_epochs(Conversation& self, const Member& from, const Bytes& body);
+    void take_link_history(Conversation& self, const Member& from, const Bytes& body);
+    bool catch_up(Conversation& c, const Finalized& f);
+    void leave_all(UnlinkWhat what, const std::vector<std::string>* only = nullptr);
+    void end_link(const std::string& why);
+    std::map<std::string, std::string> relays_;
+    bool have_due_ = false;
+    std::map<std::string, std::uint64_t> have_sent_;     // a linked device: when this one last said what it has
+    std::set<std::string> sibling_live_;                 // linked devices a live link was up with
+    std::map<std::string, std::pair<sg::net::Digest, std::uint64_t>> have_heard_;  // what each last said, and when
+    std::map<std::string, std::uint64_t> given_;         // conversation + peer: a chat given again, when
 };
 
 }  // namespace chat
