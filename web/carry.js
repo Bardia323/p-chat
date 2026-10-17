@@ -320,7 +320,7 @@ export class Carry {
         // Opened (or not ours to keep): the one who kept it drops it.
         if (hex(this.io.handle(f.envelope)) !== hex(f.handle)) return 'refused';
         const status = await this.io.open(f.envelope);
-        if (status !== 'need_turn') this.io.send(peer, frames.taken(f.mailbox, [f.handle]));
+        if (status !== 'need_turn' && status !== 'later') this.io.send(peer, frames.taken(f.mailbox, [f.handle]));
         return status;
       }
       case KIND.taken: {

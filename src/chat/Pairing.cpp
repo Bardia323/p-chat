@@ -25,7 +25,7 @@ Member member_of(const Device& d, std::uint8_t flags) {
 
 Bytes encode(const Invite& i) {
     utf8_bound(i.relay, 512, "a relay address");
-    if (std::uint8_t(i.kind) < 1 || std::uint8_t(i.kind) > 5) throw Refused("chat: unknown invite kind");
+    if (std::uint8_t(i.kind) < 1 || std::uint8_t(i.kind) > 6) throw Refused("chat: unknown invite kind");
     Writer w;
     w.u8(1).u8(std::uint8_t(i.kind));
     device(w, i.owner);
@@ -37,7 +37,7 @@ Invite decode_invite(const Bytes& b) {
     if (r.u8() != 1) throw Refused("chat: unknown invite version");
     Invite i;
     const auto kind = r.u8();
-    if (kind < 1 || kind > 5) throw Refused("chat: unknown invite kind");
+    if (kind < 1 || kind > 6) throw Refused("chat: unknown invite kind");
     i.kind = InviteKind(kind);
     i.owner = device(r);
     i.token = r.fixed<16>();

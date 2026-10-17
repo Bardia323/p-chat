@@ -149,8 +149,11 @@ sg::Params contact_remove_args(const ConversationId& c) {
     return p;
 }
 sg::Params device_args(const ConversationId& c, const Member& m, std::uint64_t generation) {
+    return devices_args(c, {m}, generation);
+}
+sg::Params devices_args(const ConversationId& c, const std::vector<Member>& ms, std::uint64_t generation) {
     Params p;
-    p.set("conversation", hex(c)).set("devices", devices_arg({m})).set("generation", std::int64_t(generation));
+    p.set("conversation", hex(c)).set("devices", devices_arg(ms)).set("generation", std::int64_t(generation));
     return p;
 }
 sg::Params post_args(const std::string& kind, const std::string& token) {
@@ -256,6 +259,8 @@ sg::dsl::Natives natives() {
         if (e.args.has("recovery")) s.params().set("recovery", std::int64_t(e.args.num("recovery") != 0 ? 1 : 0));
         if (e.args.has("disappear")) s.params().set("disappear", std::int64_t(std::max(0.0, e.args.num("disappear"))));
     });
+    // A chat this device left but keeps, to read: no longer written in.
+    n.arrow("chat_leave", [](State& s, Element&, Element*, const Event&) { s.params().set("left", std::int64_t(1)); });
     n.arrow("chat_clear", [](State&, Element& thread, Element*, const Event&) { thread.params.set("unread", std::int64_t(0)); });
 
     // The edits. Each refuses what is not as it says, and the graph is as it was.
@@ -276,9 +281,13 @@ sg::dsl::Natives natives() {
         auto& s = g.state(state);
         const auto generation = arg_int(e, "generation");
         if (generation != s.params().get_or<std::int64_t>("generation", 0) + 1) return done(false, "not the next generation");
+        // Every device one handoff brings in, at once (a group's member and
+        // all their devices): the generation moves once.
         const auto ms = devices_from(arg_text(e, "devices"));
-        if (ms.size() != 1) return done(false, "one device at a time");
-        add_device(g, state, ms[0], natives());
+        if (ms.empty()) return done(false, "no device");
+        for (const auto& m : ms)
+            if (s.find(device_element(device_id(m.device)))) return done(false, "that device is pinned already");
+        for (const auto& m : ms) add_device(g, state, m, natives());
         s.params().set("generation", generation);
         return done(true);
     });
@@ -289,10 +298,10 @@ sg::dsl::Natives natives() {
         const auto generation = arg_int(e, "generation");
         if (generation != s.params().get_or<std::int64_t>("generation", 0) + 1) return done(false, "not the next generation");
         const auto ms = devices_from(arg_text(e, "devices"));
-        if (ms.size() != 1) return done(false, "one device at a time");
-        const auto element = device_element(device_id(ms[0].device));
-        if (!s.find(element)) return done(false, "that device is not pinned");
-        s.remove_element(element);
+        if (ms.empty()) return done(false, "no device");
+        for (const auto& m : ms)
+            if (!s.find(device_element(device_id(m.device)))) return done(false, "that device is not pinned");
+        for (const auto& m : ms) s.remove_element(device_element(device_id(m.device)));
         s.params().set("generation", generation);
         return done(true);
     });

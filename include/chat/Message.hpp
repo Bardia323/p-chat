@@ -25,10 +25,13 @@ namespace chat {
 
 // Protocol 2 added `delivery`, 3 `file`, 4 `sender_key` and `group_invite`,
 // 5 `options` (and recovery's control frames), 6 `push`, 7 `call` and
-// `call_join`, 8 `game` and `stroke`, 9 `release`. A message's content says
-// the version it was written in; earlier ones are still read.
-constexpr std::uint8_t protocol_version = 10;
-enum class Type { Text, Ack, DeviceRevoked, HistorySync, Rekey, Delivery, File, SenderKey, GroupInvite, Options, Push, Call, CallJoin, Game, Stroke, Release };
+// `call_join`, 8 `game` and `stroke`, 9 `release`, 11 `linked_chat`,
+// `device_ask`, `unlink` and `link_name` (linked devices, Link.hpp). A
+// message's content says the version it was written in; earlier ones are
+// still read.
+constexpr std::uint8_t protocol_version = 11;
+enum class Type { Text, Ack, DeviceRevoked, HistorySync, Rekey, Delivery, File, SenderKey, GroupInvite, Options, Push, Call, CallJoin, Game, Stroke, Release,
+                  LinkedChat, DeviceAsk, Unlink, LinkName };
 const char* type_name(Type t);
 // Unknown names are not refused here: they are acknowledged and ignored.
 std::optional<Type> type_of(const std::string& name);

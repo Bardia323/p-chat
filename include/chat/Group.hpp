@@ -16,7 +16,9 @@
 
 namespace chat {
 
-enum class Kind : std::uint8_t { Direct = 0, Group = 1, Channel = 2 };
+// Protocol 11 added Self: the conversation of one person's linked devices
+// alone (Link.hpp), over which they keep each other's chats.
+enum class Kind : std::uint8_t { Direct = 0, Group = 1, Channel = 2, Self = 3 };
 
 // A sender key: an id, a chain key, and how far the chain has gone.
 struct SenderKey {

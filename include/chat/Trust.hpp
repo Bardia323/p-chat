@@ -145,6 +145,15 @@ enum class Control : std::uint8_t {
     // Protocol 7: a call's next key, to each device still in it (Call.hpp).
     CallKey = 11,
     CallRoster = 12,  // a call's next roster: its finalized epoch and the handoff that seals it
+    // Protocol 11: between one person's linked devices, in their self
+    // conversation (Link.hpp).
+    LinkHave = 13,     // what this device has of each chat
+    LinkEpochs = 14,   // a chat's finalized epochs (and its last handoff) a linked device lacks
+    LinkHistory = 15,  // a chat's messages a linked device lacks, each with its key
+    // Protocol 11: a device leaving a chat of its own accord (Link.hpp).
+    LeaveAsk = 16,   // Leave | the leaving device's own endorsement, to every member
+    LeaveVote = 17,  // an endorsement, to the leaving device
+    LeaveDone = 18,  // LeaveDone, to every member of the committee it leaves
 };
 struct HandoffAsk {
     sg::net::Handoff handoff;

@@ -21,11 +21,16 @@ const char* type_name(Type t) {
     case Type::Game: return "game";
     case Type::Stroke: return "stroke";
     case Type::Release: return "release";
+    case Type::LinkedChat: return "linked_chat";
+    case Type::DeviceAsk: return "device_ask";
+    case Type::Unlink: return "unlink";
+    case Type::LinkName: return "link_name";
     }
     throw Refused("chat: unknown type");
 }
 std::optional<Type> type_of(const std::string& name) {
-    for (auto t : {Type::Text, Type::Ack, Type::DeviceRevoked, Type::HistorySync, Type::Rekey, Type::Delivery, Type::File, Type::SenderKey, Type::GroupInvite, Type::Options, Type::Push, Type::Call, Type::CallJoin, Type::Game, Type::Stroke, Type::Release})
+    for (auto t : {Type::Text, Type::Ack, Type::DeviceRevoked, Type::HistorySync, Type::Rekey, Type::Delivery, Type::File, Type::SenderKey, Type::GroupInvite, Type::Options, Type::Push, Type::Call, Type::CallJoin, Type::Game, Type::Stroke, Type::Release,
+                   Type::LinkedChat, Type::DeviceAsk, Type::Unlink, Type::LinkName})
         if (name == type_name(t)) return t;
     return std::nullopt;
 }

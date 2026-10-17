@@ -2,7 +2,8 @@
 # name (c_ and the conversation id), ID the id itself. Its devices are
 # added beside it from world/device.sg, one element each.
 #
-# What it is: its kind (0 two sides, 1 a group, 2 a channel), what this device calls the other side (its own choice: the
+# What it is: its kind (0 two sides, 1 a group, 2 a channel, 3 this person's
+# own linked devices alone), what this device calls the other side (its own choice: the
 # one invited names the one who invited), what they call themselves, whose
 # side it is on, the committee generation it is at, and
 # on its thread how many messages are unread and how many it has sent (its
@@ -11,7 +12,10 @@
 # the unread count; delivery says whether this device takes mail (its own
 # opt-in, `mailbox`); its options say whether a lost device may be
 # replaced (`recovery`) and after how many seconds messages disappear
-# (`disappear`, 0 never). The messages themselves are content, kept outside.
+# (`disappear`, 0 never); leave makes it a copy this device keeps but no
+# longer writes in (`left`: it left the chat when it was unlinked from this
+# person's other devices, and keeps what was said). The messages themselves
+# are content, kept outside.
 
 extern state contacts
 
@@ -23,6 +27,7 @@ state CONV {
     kind = int(0)
     recovery = int(1)
     disappear = int(0)
+    left = int(0)
     element thread {
         unread = int(0)
         sent = int(0)
@@ -40,6 +45,7 @@ state CONV {
     thread -> thread : rename(name) on CONV.rename native chat_rename
     thread -> thread : deliver(mode) on CONV.delivery native chat_delivery
     thread -> thread : options(recovery) on CONV.options native chat_options
+    thread -> thread : leave on CONV.leave native chat_leave
     say CONV.outgoing
 }
 
@@ -49,6 +55,7 @@ port CONV.read
 port CONV.rename
 port CONV.delivery
 port CONV.options
+port CONV.leave
 
 transition contacts -[contacts.open]-> CONV when arg.conversation == "ID"
 transition CONV -[CONV.close]-> contacts

@@ -31,7 +31,7 @@ function theme(choice) {
 }
 theme();
 matchMedia('(prefers-color-scheme: dark)').addEventListener?.('change', () => theme());
-const KIND = { contact: 1, extra: 2, reusable: 3, channel: 4, recovery: 5 };
+const KIND = { contact: 1, extra: 2, reusable: 3, channel: 4, recovery: 5, link: 6 };
 
 // The link's fragment is read once and taken out of the address bar.
 let invite = null, meeting = null, relinking = null;
@@ -94,7 +94,7 @@ function toast(text) {
   setTimeout(() => t.remove(), 4500);
 }
 const DEPTH = { meet: 1, relink: 3, contacts: 0, unsupported: 0, unrecognized: 0, pair: 1, chat: 1, invite: 1, about: 1, error: 1, newgroup: 1,
-  paired: 2, devices: 2, settings: 2, replace: 3, call: 2, game: 2, board: 2 };
+  paired: 2, devices: 2, settings: 2, replace: 3, call: 2, game: 2, board: 2, linked: 3, unlink: 4, split: 5 };
 let entering = null;
 
 // A file in the conversation: its little picture at once, the thing itself
@@ -204,8 +204,9 @@ const ui = {
     else if (state.screen === 'devices' && conv === state.conv) renderDevices();
     else if (state.screen === 'relink') renderRelinkStatus();
     else if (state.screen === 'invite' && state.invite?.kind !== KIND.contact && conv) renderInviteStatus();
-    else if (state.screen === 'pair' && session.conversations().length) {
-      const c = session.conversations()[0];
+    else if (state.screen === 'linked' || state.screen === 'split') show(state.screen, {});
+    else if (state.screen === 'pair' && session.chats().length && !linkInvite()) {
+      const c = session.chats()[0];
       show('paired', { conv: c, peer: session.info(c).members.find((m) => !m.self && m.side === 0)?.peer });
     }
   },
@@ -233,6 +234,18 @@ const ui = {
     else if (state.screen === 'meet') renderMeet();
   },
   warn(t) { toast(t); },
+  // Linked devices: the link ended here; the other device asks for a split; all forgotten.
+  unlinked(why) {
+    toast(why === 'split' ? 'Split. Each device keeps its own chats.' : why === 'forget' ? 'Unlinked. Leaving every chat, then erasing this device.'
+      : why === 'keep' ? 'Unlinked. Leaving every chat; what was said stays here to read.' : 'Unlinked.');
+    if (['linked', 'unlink', 'split'].includes(state.screen)) show('linked', {});
+    else this.changed(null);
+  },
+  splitAsked() {
+    if (state.screen === 'linked') show('linked', {});
+    else toast('Your other device asks to split your chats. Open Settings → Linked devices.');
+  },
+  forgotten() { location.reload(); },
   ringing(conv, call, peer) {
     state.ringing.set(conv, { call, peer });
     if (state.screen === 'chat' && state.conv === conv) renderChat(false);
@@ -354,7 +367,8 @@ function show(name, data = {}) {
   renderSide();
   const screens = { unsupported, unrecognized, pair: renderPair, contacts: renderContacts, chat: () => renderChat(true),
     invite: renderInvite, meet: renderMeet, relink: renderRelink, devices: renderDevices, paired: renderPaired, about: renderAbout, error: renderError, settings: renderSettings,
-    newgroup: renderNewGroup, replace: renderReplace, call: renderCall, game: renderGame, board: renderBoard };
+    newgroup: renderNewGroup, replace: renderReplace, call: renderCall, game: renderGame, board: renderBoard,
+    linked: renderLinked, unlink: renderUnlink, split: renderSplit };
   (screens[name] || renderContacts)();
 }
 
@@ -381,12 +395,17 @@ function unrecognized() {
 }
 
 
+// The invite being paired with is a Link (another device of one's own): its
+// pairing ends on the Linked screen the self conversation's notice shows.
+function linkInvite() {
+  try { return session.chat.parseInvite(invite).kind === KIND.link; } catch { return false; }
+}
 function renderPair() {
   const parsed = (() => { try { return session.chat.parseInvite(invite); } catch { return null; } })();
   if (!parsed) return show('error', { kind: 'bad_link' });
   const mail = h('input', { type: 'checkbox', 'data-test': 'mail' });
   const words = h('textarea', { autocapitalize: 'none', autocomplete: 'off', spellcheck: 'false', placeholder: 'six words', 'data-test': 'code' });
-  const recovering = parsed.kind === KIND.recovery;
+  const recovering = parsed.kind === KIND.recovery, linking = parsed.kind === KIND.link;
   const status = h('p', { class: 'fine', 'data-test': 'pair-status' },
     state.pairing === 'asked' && recovering ? 'Asked. The others approve; the lost device has a day to object. Show them these four pictures:' :
     state.pairing === 'asked' ? 'Asked. Waiting for the other phone to answer…' :
@@ -397,7 +416,7 @@ function renderPair() {
   const stale = state.pairing === 'asked' && Date.now() - (state.askedAt || 0) > 30e3;
   if (state.pairing === 'asked' && !stale) setTimeout(() => state.screen === 'pair' && renderPair(), 31e3);
   const go = h('button', { class: 'btn wide', 'data-test': 'pair', disabled: state.pairing === 'working' || (state.pairing === 'asked' && !stale) },
-    stale ? 'Ask again' : 'Pair this phone');
+    stale ? 'Ask again' : linking ? 'Link this device' : 'Pair this phone');
   go.onclick = async () => {
     let code;
     try { code = session.chat.normalizeCode(words.value); } catch { toast('That is not six words from the list. Check each word.'); return; }
@@ -409,12 +428,13 @@ function renderPair() {
   };
   const mine = recovering && state.pairing === 'asked' && session.app ? session.app.fingerprintOf(session.app.peer()) : null;
   draw(head('Pair', { small: true, back: () => { state.pairing = null; show('contacts'); } }), h('main', {},
-    h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, recovering ? 'In place of a lost device' : 'You were invited'),
-      h('p', { class: 'caps light' }, 'By device ' + shortId(parsed.owner))),
+    h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, recovering ? 'In place of a lost device' : linking ? 'Link to your other device' : 'You were invited'),
+      h('p', { class: 'caps light' }, (linking ? 'Your device ' : 'By device ') + shortId(parsed.owner))),
     h('div', { class: 'pad' },
-      h('p', {}, 'Type the six words you were told separately. Nothing you type leaves this phone: the words only prove this link was meant for you.'),
+      linking ? h('p', {}, 'This device becomes one with your other one: every chat on both, what was said given here, new chats on both. Type the six words your other device shows.')
+        : h('p', {}, 'Type the six words you were told separately. Nothing you type leaves this phone: the words only prove this link was meant for you.'),
       h('label', { class: 'field' }, h('span', {}, 'The six words'), words),
-      h('label', { class: 'check' }, mail, h('span', {}, 'When this phone is away, let messages wait on the relay, locked so only this phone can read them (up to 14 days). Otherwise they wait on the sender\'s phone until you are both online.')),
+      linking ? null : h('label', { class: 'check' }, mail, h('span', {}, 'When this phone is away, let messages wait on the relay, locked so only this phone can read them (up to 14 days). Otherwise they wait on the sender\'s phone until you are both online.')),
       go, status,
       mine ? h('div', { class: 'emoji', 'data-test': 'own-fingerprint' }, mine.map((e) => h('div', { 'data-glyph': e.glyph }, emojiPic(e), h('span', { class: 'n' }, e.name)))) : null)));
 }
@@ -422,7 +442,7 @@ function renderPair() {
 // The chats as the list shows them: on Chats (a phone), and in the side
 // pane of a computer's wide window, the open one marked.
 async function chatRows(selected = null) {
-  const ids = session.conversations();
+  const ids = session.chats();
   const rows = [];
   for (const id of ids) {
     const info = session.info(id);
@@ -433,7 +453,8 @@ async function chatRows(selected = null) {
       h('span', { class: 'tag' }),
       h('span', {}, h('span', { class: 'name', dir: 'auto' }, info.name,
         info.kind === 1 ? h('span', { class: 'badge' }, 'group') : info.kind === 2 ? h('span', { class: 'badge' }, 'channel') : null), h('span', { class: 'last' },
-        info.removed ? 'This device was removed' : last ? (last.mine ? 'You: ' : '') + preview(last) : 'No messages yet'),
+        info.left ? 'Read only: this device left' : info.leaving ? 'Leaving…' : info.removed ? 'This device was removed'
+          : last ? (last.mine ? 'You: ' : '') + preview(last) : 'No messages yet'),
         // A replacement waiting on this phone: said on the list, not only inside the chat.
         (() => {
           const [role, , , , , , approved] = (info.recovering || '').split(' ');
@@ -512,7 +533,7 @@ addEventListener('keydown', (e) => {
 let drawnChat = null;
 async function renderChat(first) {
   const id = state.conv;
-  if (!session.conversations().includes(id)) return show('contacts');
+  if (!session.chats().includes(id)) return show('contacts');
   if (first) await session.enter(id);
   else if (document.visibilityState === 'visible') await session.read(id);
   const info = session.info(id);
@@ -535,7 +556,11 @@ async function renderChat(first) {
       h('span', { class: 'meta', 'data-status': m.mine ? m.status || 'sent' : null }, when(m.time), m.mine ? ' ' + STATUS_MARK[m.status || 'sent'] : '')));
   }
   const banners = [];
-  if (info.removed) banners.push(h('div', { class: 'banner red', 'data-test': 'removed' }, h('b', {}, 'Removed'), 'This device was removed. Ask ' + info.name + ' for a new key.'));
+  // Left when it was unlinked: a copy to read, said plainly.
+  if (info.left || info.leaving) banners.push(h('div', { class: 'banner', 'data-test': 'left' }, h('b', {}, info.leaving && !info.removed ? 'Leaving' : 'Read only'),
+    info.leaving && !info.removed ? 'This device is leaving this chat (it was unlinked). Your other device stays in it.'
+      : 'This device left this chat when it was unlinked. What was said stays here to read; nothing more comes or goes.'));
+  else if (info.removed) banners.push(h('div', { class: 'banner red', 'data-test': 'removed' }, h('b', {}, 'Removed'), 'This device was removed. Ask ' + info.name + ' for a new key.'));
   if (state.alerts.has(id + ':equivocation')) banners.push(h('div', { class: 'banner red', 'data-test': 'equivocation' }, h('b', {}, 'Two versions'),
     'A device sent two different messages under the same number. Both are kept as evidence. Someone may be tampering with this conversation.'));
   if (state.alerts.has(id + ':history_differs')) banners.push(h('div', { class: 'banner red', 'data-test': 'history-differs' }, h('b', {}, 'History differs'),
@@ -569,9 +594,10 @@ async function renderChat(first) {
   // No relay and no link to them: nothing can reach them, so nothing is sent
   // (one side moving on alone is what a chat must never do).
   const cut = !info.removed && !session.canSend(id);
-  const input = h('textarea', { rows: 1, placeholder: info.removed ? 'Removed' : cut ? 'Not linked to them, and no relay: can\'t send now' : 'Message',
-    disabled: info.removed || cut, 'data-test': 'message', dir: 'auto', maxlength: 20000, 'aria-label': 'Message' });
-  const key = h('button', { class: 'key', 'data-test': 'send', 'aria-label': 'Send', title: 'Send', disabled: info.removed || cut });
+  const shut = info.removed || info.left || info.leaving;
+  const input = h('textarea', { rows: 1, placeholder: info.left || info.leaving ? 'Read only' : info.removed ? 'Removed' : cut ? 'Not linked to them, and no relay: can\'t send now' : 'Message',
+    disabled: shut || cut, 'data-test': 'message', dir: 'auto', maxlength: 20000, 'aria-label': 'Message' });
+  const key = h('button', { class: 'key', 'data-test': 'send', 'aria-label': 'Send', title: 'Send', disabled: shut || cut });
   // The key sends what is written; with nothing written it records a voice
   // note (tap, speak, tap again), and while recording it stops.
   const KEY = {
@@ -659,7 +685,7 @@ async function renderChat(first) {
     info.kind !== 2 ? liveKey(id, 'board') : null,
     info.kind === 0 ? liveKey(id, 'play') : null,
     mic, photos, files);
-  const attach = h('button', { class: 'key attach', 'data-test': 'attach', 'aria-label': 'Attach', title: 'Attach', disabled: info.removed || cut,
+  const attach = h('button', { class: 'key attach', 'data-test': 'attach', 'aria-label': 'Attach', title: 'Attach', disabled: shut || cut,
     onclick: () => setTray(tray.classList.contains('hidden')) });
   // The tray and its key say the same thing, always: open, the + turned to ×.
   function setTray(open) {
@@ -677,7 +703,7 @@ async function renderChat(first) {
     h('div', {}, h('h1', { 'data-test': 'chat-name', dir: 'auto' }, info.name), h('div', { class: 'sub' },
       info.kind === 2 ? (info.member ? 'Your channel' : 'Channel · read only')
         : info.kind === 1 ? info.members.length + ' devices · group' : info.members.length - 1 + (info.members.length === 2 ? ' device' : ' devices') + ' · sealed',
-      info.kind === 2 ? null : h('span', { class: 'reach', 'data-test': 'reach' }, ' · ' + { linked: 'linked', relay: 'through the relay', none: 'not reachable now',
+      info.kind === 2 || info.left ? null : h('span', { class: 'reach', 'data-test': 'reach' }, ' · ' + { linked: 'linked', relay: 'through the relay', none: 'not reachable now',
         carried: 'through ' + session.relayingName(id) }[session.reachedBy(id)]))),
     info.member && info.kind !== 2 && Calls.supported() && !info.removed ? callKey(id) : null,
     info.member && info.kind === 1 && Calls.supported() && !info.removed ? callKey(id, true) : null,
@@ -697,11 +723,13 @@ async function renderChat(first) {
     if (ki) { ki.disabled = input.disabled; ki.placeholder = input.placeholder; }
     for (const test of ['send', 'attach']) {
       const k = kept.querySelector(`[data-test=${test}]`);
-      if (k) k.disabled = info.removed || cut;
+      if (k) k.disabled = shut || cut;
     }
   } else {
     draw(chathead, body,
-      info.kind === 2 && !info.member
+      info.left || info.leaving
+        ? h('div', { class: 'composer reader', 'data-test': 'read-only', 'data-chat': id }, h('p', { class: 'caps light' }, 'Read only · this device left'))
+        : info.kind === 2 && !info.member
         ? h('div', { class: 'composer reader', 'data-test': 'read-only', 'data-chat': id }, h('p', { class: 'caps light' }, 'Only ' + (info.introduced || 'its publisher') + ' posts here'))
         : h('div', { class: 'composer', 'data-chat': id }, stickers, tray, attach, input, key));
     grow();
@@ -744,7 +772,7 @@ function recoveryBanner(id, info) {
 
 async function renderInvite() {
   if (state.invite?.link) return renderInviteShown();
-  const contacts = session.conversations().filter((id) => session.info(id).side === 0);
+  const contacts = session.chats().filter((id) => session.info(id).side === 0 && session.info(id).kind === 0);
   const pick = h('select', { 'data-test': 'for' }, contacts.map((id) => h('option', { value: id }, session.info(id).name)));
   if (state.screen !== 'invite') return;
   const meet = async () => {
@@ -757,8 +785,8 @@ async function renderInvite() {
   const linked = session.relayOn();
   const make = async (kind) => {
     try {
-      const conv = kind === KIND.contact ? '' : pick.value;
-      if (kind !== KIND.contact && !conv) { toast('Pick whose device it is.'); return; }
+      const conv = kind === KIND.contact || kind === KIND.link ? '' : pick.value;
+      if (kind !== KIND.contact && kind !== KIND.link && !conv) { toast('Pick whose device it is.'); return; }
       const made = await session.invite(kind, conv);
       state.invite = { ...made, kind, conv };
       renderInviteShown();
@@ -772,7 +800,9 @@ async function renderInvite() {
     h('button', { class: 'choice orange', 'data-test': 'kind-extra', onclick: () => make(KIND.extra), disabled: !contacts.length || !linked },
       h('p', { class: 'caps' }, 'Another device of…'), h('p', { class: 'caps light' }, 'One more phone or computer for a contact')),
     h('button', { class: 'choice red', 'data-test': 'kind-reusable', onclick: () => make(KIND.reusable), disabled: !contacts.length || !linked },
-      h('p', { class: 'caps' }, 'Reusable device key for…'), h('p', { class: 'caps light' }, 'Works until you cancel it'))),
+      h('p', { class: 'caps' }, 'Reusable device key for…'), h('p', { class: 'caps light' }, 'Works until you cancel it')),
+    h('button', { class: 'choice violet', 'data-test': 'kind-link', onclick: () => make(KIND.link), disabled: !linked },
+      h('p', { class: 'caps' }, 'My other device'), h('p', { class: 'caps light' }, 'Link your phone and computer: one you, every chat on both'))),
     h('div', { class: 'pad' },
       linked ? null : h('p', { class: 'fine', 'data-test': 'relay-off-note' }, 'Relays are off (Settings), so invites go in person only.'),
       contacts.length ? h('label', { class: 'field' }, h('span', {}, 'Whose device'), pick) : null,
@@ -788,12 +818,13 @@ function renderInviteShown() {
   const img = h('img', { class: 'qr', alt: 'Invite link as a QR code', src: qr.createDataURL(8, 0), 'data-test': 'qr', 'data-link': inv.link });
   const words = inv.code.split(' ');
   draw(head('Invite', { small: true, back: () => { state.invite = null; show('contacts'); } }), h('main', {}, h('div', { class: 'split' }, h('div', {},
-    h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, inv.kind === KIND.contact ? 'Scan with their phone camera' : 'Scan with the new device')),
+    h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, inv.kind === KIND.contact ? 'Scan with their phone camera' : inv.kind === KIND.link ? 'Scan with your other device' : 'Scan with the new device')),
     h('div', { class: 'pad center' }, img,
       h('div', { class: 'row' }, h('button', { class: 'btn light', onclick: async () => { await navigator.clipboard?.writeText(inv.link); toast('Link copied. Send it; say the words separately.'); } }, 'Copy link')))),
     h('div', {}, h('div', { class: 'band amber' }, h('p', { class: 'caps' }, 'Then say these six words'), h('p', { class: 'caps light' }, 'Out loud or another way. Never with the link.')),
     h('div', { class: 'pad' }, h('ol', { class: 'words', 'data-test': 'words' }, words.map((w) => h('li', {}, w))),
       h('p', { class: 'fine', 'data-test': 'invite-status' }, inv.kind === KIND.contact ? 'Waiting for them to pair…'
+        : inv.kind === KIND.link ? 'Waiting for your other device…'
         : inv.kind === KIND.recovery ? 'Waiting… the others approve, and the lost device has a day to object.' : 'Waiting… their other device must approve.'),
       h('button', { class: 'btn light', onclick: async () => { await session.cancelInvite(inv.token); state.invite = null; show('contacts'); } }, 'Cancel invite'))))));
 }
@@ -1050,6 +1081,7 @@ async function scanQR(title, onText) {
 function renderPaired() {
   const { conv, peer } = state;
   const info = session.info(conv);
+  if (info.kind === 3) return renderLinkedPaired(conv, peer);
   const other = peer || info.members.find((m) => !m.self)?.peer;
   const fp = session.app.fingerprintWith(other);
   // What you call them is yours: chosen here, on this phone, and never sent.
@@ -1092,7 +1124,7 @@ function renderDevices() {
   const rows = info.members.map((m) => {
     const fp = m.self ? null : session.app.fingerprintWith(m.peer);
     return h('div', { class: 'device', 'data-test': 'device', 'data-peer': m.peer },
-      h('div', { class: 'who' }, m.self ? 'This device' : m.side === 0 ? (owner ? 'Your device' : info.name + '\'s device') : (owner ? info.name + '\'s device' : 'Your other device')),
+      h('div', { class: 'who' }, m.self ? 'This device' : m.linked ? 'Your linked device' : m.side === 0 ? (owner ? 'Your device' : info.name + '\'s device') : (owner ? info.name + '\'s device' : 'Your other device')),
       h('div', { class: 'id' }, m.peer),
       fp ? h('div', { class: 'emoji' }, fp.map((e) => h('div', { 'data-glyph': e.glyph }, emojiPic(e), h('span', { class: 'n' }, e.name)))) : null,
       !m.self && owner && m.side === 1 ? h('button', { class: 'btn warn', 'data-test': 'revoke', onclick: async () => {
@@ -1380,6 +1412,132 @@ function renderReplace() {
       } }, 'Make the invite'))));
 }
 
+// ---- linked devices (protocol 11) ----
+
+// A short line for Settings: who this device is linked to, if anyone.
+function linkedLine() {
+  const n = session.app ? session.app.linked().length : 0;
+  return n ? 'Linked to ' + n + (n === 1 ? ' other device' : ' other devices') + ' of yours. Every chat is on each.'
+    : 'Not linked. Link your phone and your computer: one you, every chat on both.';
+}
+// When a linked device was last heard from, in words.
+function lastSeen(d) {
+  if (d.live) return 'Online now';
+  if (!d.heard) return 'Not heard from yet';
+  const ago = Date.now() - d.heard;
+  if (ago < 60e3) return 'Last heard just now';
+  if (ago < 3600e3) return 'Last heard ' + Math.round(ago / 60e3) + ' min ago';
+  if (ago < 86400e3) return 'Last heard ' + when(d.heard);
+  return 'Last heard ' + day(d.heard);
+}
+
+// Two devices just linked: the same four pictures on both.
+function renderLinkedPaired(conv, peer) {
+  const other = peer || session.info(conv).members.find((m) => !m.self)?.peer;
+  const fp = session.app.fingerprintWith(other);
+  draw(head('Linked', { small: true, back: () => show('linked', {}) }), h('main', {},
+    h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Linked'), h('p', { class: 'caps light' }, 'One you, two devices')),
+    h('div', { class: 'pad' },
+      h('div', { class: 'emoji', 'data-test': 'fingerprint' }, fp.map((e) => h('div', { 'data-glyph': e.glyph }, emojiPic(e), h('span', { class: 'n' }, e.name)))),
+      h('p', {}, 'Both devices show these four pictures. If they match, no one stood between them.'),
+      h('p', { class: 'fine' }, 'Your chats come over now, with what was said in them. A new chat on one is on the other.'),
+      h('button', { class: 'btn wide', 'data-test': 'linked-done', onclick: () => { state.invite = null; show('linked', {}); } }, 'Done'))));
+}
+
+// Settings → Linked devices: each with its four pictures, when it was last
+// heard from, and a way to unlink.
+function renderLinked() {
+  if (state.screen !== 'linked') return;
+  const devices = session.linkedDevices();
+  const split = session.app ? session.app.split() : { state: '' };
+  const leaving = session.chats().filter((id) => session.info(id).leaving).length;
+  const banners = [];
+  if (split.state === 'asking') {
+    const name = (id) => session.info(id).name;
+    banners.push(h('div', { class: 'banner', 'data-test': 'split-asked' }, h('b', {}, 'Split your chats?'),
+      'Your other device asks to split. Each device then leaves the chats that go with the other.',
+      h('p', { class: 'split-list' }, h('span', { class: 'caps' }, 'Stay here: '), split.mine.length ? split.mine.map(name).join(', ') : 'none'),
+      h('p', { class: 'split-list' }, h('span', { class: 'caps' }, 'Go with the other: '), split.theirs.length ? split.theirs.map(name).join(', ') : 'none'),
+      h('div', { class: 'row' },
+        h('button', { class: 'btn', 'data-test': 'agree-split', onclick: async () => {
+          if (!confirm('Split: this device leaves the chats that go with the other, and the two are no longer linked.')) return;
+          try { await session.agreeSplit(); } catch (e) { toast(e.message); }
+        } }, 'Agree'),
+        h('button', { class: 'btn light', 'data-test': 'refuse-split', onclick: async () => { await session.refuseSplit(); show('linked', {}); } }, 'Not this'))));
+  } else if (split.state === 'asked') {
+    banners.push(h('div', { class: 'banner', 'data-test': 'split-waiting' }, h('b', {}, 'Split asked'), 'Waiting for your other device to agree.'));
+  }
+  if (leaving) banners.push(h('div', { class: 'banner', 'data-test': 'leaving' }, h('b', {}, 'Leaving'),
+    'Leaving ' + leaving + (leaving === 1 ? ' chat' : ' chats') + '. Each needs its other phones to agree; it finishes when they are online.'));
+  const cards = devices.map((d) => h('div', { class: 'device', 'data-test': 'linked-device', 'data-peer': d.peer },
+    h('div', { class: 'who' }, 'Your other device'),
+    h('div', { class: 'seen' + (d.live ? ' live' : ''), 'data-test': 'last-seen' }, lastSeen(d)),
+    h('div', { class: 'id' }, d.peer),
+    h('div', { class: 'emoji' }, d.fingerprint.map((e) => h('div', { 'data-glyph': e.glyph }, emojiPic(e), h('span', { class: 'n' }, e.name)))),
+    h('button', { class: 'btn warn', 'data-test': 'unlink', disabled: !!split.state, onclick: () => show('unlink', { unlinkFrom: d.peer }) }, 'Unlink')));
+  const link = async () => {
+    try {
+      const made = await session.invite(KIND.link, '');
+      state.invite = { ...made, kind: KIND.link, conv: '' };
+      show('invite', { invite: state.invite });
+    } catch (e) { toast(e.message); }
+  };
+  draw(head('Linked devices', { small: true, back: () => show('settings') }), h('main', {},
+    h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'One you, many devices'),
+      h('p', { class: 'caps light', 'data-test': 'linked-count' }, devices.length ? 'This device and ' + devices.length + ' more' : 'This device alone')),
+    banners,
+    devices.length ? cards : h('div', { class: 'pad' }, h('p', { 'data-test': 'not-linked' }, 'This device is not linked to another.'),
+      h('p', { class: 'fine' }, 'Linked devices are one person to everyone you talk to: each chat is on all of them, with what was said, and a device left on fills in one that was away.')),
+    h('div', { class: 'pad' },
+      h('button', { class: devices.length ? 'btn light' : 'btn wide', 'data-test': 'link-device', disabled: !!split.state, onclick: link }, devices.length ? 'Link another device' : 'Link a device'),
+      h('p', { class: 'fine' }, 'On the other device, open p-chat and scan the code, then type the six words.'))));
+}
+
+// Unlinking, three ways - each said plainly, and confirmed.
+function renderUnlink() {
+  const other = state.unlinkFrom;
+  const go = async (mode, sure) => {
+    if (!confirm(sure)) return;
+    try { await session.unlink(mode); } catch (e) { toast(e.message); return; }
+    show('linked', {});
+  };
+  draw(head('Unlink', { small: true, back: () => show('linked', {}) }), h('main', {},
+    h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Unlink this device'), h('p', { class: 'caps light' }, 'From ' + shortId(other || ''))),
+    h('button', { class: 'choice amber', 'data-test': 'unlink-keep', onclick: () => go('keep',
+      'Keep: this device leaves every chat, and keeps what was said to read. Your other device stays in them.') },
+      h('p', { class: 'caps' }, 'Keep a copy'), h('p', { class: 'caps light' }, 'Leave every chat; what was said stays here, read only')),
+    h('button', { class: 'choice red', 'data-test': 'unlink-forget', onclick: () => go('forget',
+      'Forget: this device leaves every chat, then erases everything on it. Your other device stays in them.') },
+      h('p', { class: 'caps' }, 'Forget'), h('p', { class: 'caps light' }, 'Leave every chat, then erase this device')),
+    h('button', { class: 'choice violet', 'data-test': 'unlink-split', disabled: session.app.linked().length !== 1, onclick: () => show('split', { splitPick: null }) },
+      h('p', { class: 'caps' }, 'Split'), h('p', { class: 'caps light' }, 'Choose which chats stay here and which go with the other')),
+    h('div', { class: 'pad' }, h('p', { class: 'fine' }, 'Your contacts see one of your devices leave a chat, as when a device is removed. Keep and Forget work even while your other device is away; a split waits for both to agree.'))));
+}
+
+// A split: each chat both devices have, here or with the other.
+function renderSplit() {
+  const shared = session.chats().filter((id) => { const i = session.info(id); return !i.removed && !i.left && i.kind !== 2 && i.members.some((m) => m.linked); });
+  state.splitPick ??= Object.fromEntries(shared.map((id) => [id, 'here']));
+  const rows = shared.map((id) => {
+    const at = state.splitPick[id] || 'here';
+    return h('div', { class: 'split-row', 'data-test': 'split-row', 'data-conv': id },
+      h('span', { class: 'name', dir: 'auto' }, session.info(id).name),
+      h('div', { class: 'theme', role: 'group', 'aria-label': 'Where it goes' },
+        h('button', { class: 'btn light', 'aria-pressed': String(at === 'here'), 'data-test': 'split-here', onclick: () => { state.splitPick[id] = 'here'; renderSplit(); } }, 'Here'),
+        h('button', { class: 'btn light', 'aria-pressed': String(at === 'there'), 'data-test': 'split-there', onclick: () => { state.splitPick[id] = 'there'; renderSplit(); } }, 'Other')));
+  });
+  const ask = async () => {
+    const mine = shared.filter((id) => state.splitPick[id] !== 'there'), theirs = shared.filter((id) => state.splitPick[id] === 'there');
+    if (!confirm('Ask your other device to split: ' + mine.length + ' stay here, ' + theirs.length + ' go with it. It must agree.')) return;
+    try { await session.askSplit(mine, theirs); } catch (e) { toast(e.message); return; }
+    show('linked', {});
+  };
+  draw(head('Split', { small: true, back: () => show('unlink', {}) }), h('main', {},
+    h('div', { class: 'band yellow' }, h('p', { class: 'caps' }, 'Which chats go where'), h('p', { class: 'caps light' }, 'Both devices must agree')),
+    h('div', { class: 'pad' }, shared.length ? rows : h('p', {}, 'No chats are on both devices.'),
+      h('button', { class: 'btn wide', 'data-test': 'ask-split', onclick: ask }, 'Ask the other device'))));
+}
+
 function renderError(data = state) {
   const texts = {
     invite_failed: ['Stopped', 'The six words did not match', 'Perhaps a word was mistyped - or someone else tried to use the link. This invite is cancelled: make a new one (or ask for one), and say the words again.'],
@@ -1474,6 +1632,9 @@ async function renderSettings() {
     h('button', { class: 'btn light', 'aria-pressed': String(!on), 'data-test': test + '-off', onclick: async () => { await set(false); renderSettings(); } }, 'Off'));
   draw(head('Settings', { small: true, back: () => show('about') }), h('main', {}, h('div', { class: 'cols' },
     h('div', { class: 'pad' },
+      h('p', { class: 'caps' }, 'Linked devices'),
+      h('p', { class: 'fine' }, linkedLine()),
+      h('button', { class: 'btn light', 'data-test': 'linked-devices', onclick: () => show('linked', {}) }, 'Linked devices'),
       h('p', { class: 'caps' }, 'Look'), looks,
       h('p', { class: 'caps' }, 'Relay'), pair('relay', relayOn, (on) => session.setRelay(on)),
       h('p', { class: 'fine', 'data-test': 'relay-state' }, relayOn

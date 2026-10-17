@@ -6,6 +6,7 @@
 // gap or an acknowledgement is waited for, for which day's mailbox to use.
 // None of it is the world's time.
 import * as c from './crypto.js';
+const forgetAllHere = () => c.forgetAll();
 import * as store from './store.js';
 import * as push from './push.js';
 import { Calls } from './call.js';
@@ -217,7 +218,7 @@ export class Relay {
 export class Session {
   constructor(chat, ui) {
     Object.assign(this, { chat, ui, app: null, dev: null, relays: new Map(), conv: new Map(), busy: false, again: false,
-      media: null, timers: [], want: 0, told: new Set(), seenPosts: new Set(), config: { ice: [] }, sentLive: 0, sentMailbox: 0, queued: 0, signals: [], joined: new Set(), pinged: new Map(), pushes: [], statuses: new Map(), relinked: new Map(), opened: [], posts: new Set() });
+      media: null, timers: [], want: 0, told: new Set(), seenPosts: new Set(), later: [], config: { ice: [] }, sentLive: 0, sentMailbox: 0, queued: 0, signals: [], joined: new Set(), pinged: new Map(), pushes: [], statuses: new Map(), relinked: new Map(), opened: [], posts: new Set() });
   }
 
   // ---- starting ----
@@ -317,6 +318,7 @@ export class Session {
     for (const id of this.conv.keys())
       for (const m of await store.messages(id))
         try { this.app.replay(id, m.obs, m.mine ? m.body : new Uint8Array(0), m.time); } catch { /* a message of a past committee */ }
+    for (const id of this.conv.keys()) this.tellRelay(id);
     this.app.live(this.config.ice || [], false);
     this.app.start();
     for (const id of this.conv.keys()) this.relayOf(id);
@@ -546,6 +548,18 @@ export class Session {
     }
   }
 
+  // A conversation's record, kept: one write at a time for each, each made
+  // when its turn comes - two writes begun together could otherwise land in
+  // the other order, leaving an older ratchet on disk than the one that sent.
+  keep(id, meta) {
+    const run = () => (this.app.conversations().includes(id)
+      ? store.saveRecord(id, this.app.save(id), meta || this.conv.get(id) || {}) : undefined);
+    this.keeping ??= new Map();
+    const next = (this.keeping.get(id) || Promise.resolve()).then(run, run);
+    this.keeping.set(id, next);
+    return next;
+  }
+
   // ---- the pump: ask, keep, carry, tell ----
   // Pumped as soon as what is running now is done (a link's event, often
   // several together: one pump for them all).
@@ -583,11 +597,21 @@ export class Session {
           if (!this.conv.has(id)) continue;
           const meta = { ...this.conv.get(id), name: this.app.info(id).name };
           this.conv.set(id, meta);
-          await store.saveRecord(id, this.app.save(id), meta);
+          this.tellRelay(id);
+          await this.keep(id, meta);
         }
         for (const n of this.app.takeNotices()) { any = true; await this.notice(n); }
         for (const o of this.app.takeOutgoing()) { any = true; await this.carry(o); }
-        for (const env of this.app.takeLive()) { any = true; await this.open(env); }
+        for (const env of this.app.takeLive()) {
+          any = true;
+          // Said under a generation not reached yet: kept a while, opened again.
+          if ((await this.open(env)).status === 'later') this.later.push({ env, until: Date.now() + 120e3 });
+        }
+        if (this.later.length && round === 0) {
+          const again = this.later.splice(0, 256);
+          for (const l of again)
+            if ((await this.open(l.env)).status === 'later' && Date.now() < l.until) this.later.push(l);
+        }
         for (const b of this.app.takeBlobs()) { any = true; await this.media.frame(b.peer, b.frame); }
         const heard = this.app.takeMedia();
         if (heard.length) this.calls.media(heard);
@@ -596,6 +620,7 @@ export class Session {
         await this.retryUnacked();
         if (!any && !this.again) break;
       }
+      if (this.profile?.forgetting) setTimeout(() => this.maybeForgotten().catch(() => {}), 0);
     } catch (e) {
       this.ui.warn(e?.message || String(e));
       console.error('pump', e);
@@ -612,13 +637,22 @@ export class Session {
   }
   async notice(n) {
     const conv = n.conversation;
+    // The self conversation (linked devices) is not a chat: nothing of it is shown.
+    if (conv && conv === this.selfConv() && (n.kind === 'sent' || n.kind === 'message')) {
+      if (n.kind === 'message') this.heard(n.peer);
+      await store.saveMessage(conv, { peer: n.peer, seq: n.sequence, obs: n.data, body: n.kind === 'sent' ? n.body : new Uint8Array(0),
+        time: n.time, type: n.type, mine: n.kind === 'sent', hidden: true });
+      return;
+    }
     switch (n.kind) {
       case 'sent': case 'resent': case 'message': {
         if (n.kind === 'resent') break;
+        // Said by this person's other (linked) device: theirs is this person's own.
+        if (n.kind === 'message' && this.isLinked(n.peer)) { this.heard(n.peer); n = { ...n, kind: 'sent', linkedFrom: true }; }
         if (n.type === 'file') {
           await store.saveMessage(conv, { peer: n.peer, seq: n.sequence, obs: n.data, body: n.body, time: n.time, type: 'file',
             mine: n.kind === 'sent', status: n.kind === 'sent' ? 'sent' : 'received', ...keyOf(n), ...this.expiry(conv, n.time) });
-          await this.media.received(conv, n.peer, n.body, n.kind === 'sent');
+          await this.media.received(conv, n.peer, n.body, n.kind === 'sent' && !n.linkedFrom);
           this.ui.changed(conv);
           break;
         }
@@ -652,7 +686,8 @@ export class Session {
         // Given after a recovery, checked against the agreed history. What
         // the lost device said was said by this side.
         const info = this.info(conv);
-        const mine = n.peer === this.app.peer() || (info.kind === 0 && !info.members.some((m) => m.side !== info.side && m.peer === n.peer));
+        const mine = n.peer === this.app.peer() || this.isLinked(n.peer) ||
+          (info.kind === 0 && !info.members.some((m) => m.side !== info.side && m.peer === n.peer));
         const shown = n.type === 'text' || n.type === 'file';
         await store.saveMessage(conv, { peer: n.peer, seq: n.sequence, obs: n.data, body: shown ? n.body : new Uint8Array(0), time: n.time,
           type: n.type, mine, status: mine ? 'delivered' : 'received', hidden: !shown, history: true, ...keyOf(n) });
@@ -698,7 +733,7 @@ export class Session {
           const via = n.peer ? [...this.conv.entries()].find(([id]) => this.info(id).kind === 0 &&
             this.info(id).members.some((m) => m.peer === n.peer)) : null;
           this.conv.set(conv, { relay: via?.[1].relay || this.profile.relay || this.config.relay, name: n.text });
-          await store.saveRecord(conv, this.app.save(conv), this.conv.get(conv));
+          await this.keep(conv);
           await this.joinRooms(this.conv.get(conv).relay);
         }
         this.sharePush(conv);
@@ -711,6 +746,45 @@ export class Session {
         break;
       }
       case 'removed_contact': this.ui.changed(conv); break;
+      // Linked devices (protocol 11).
+      case 'linked': this.ui.changed(null); break;
+      case 'linked_chat': {
+        // A chat given by this person's other device: on its relay.
+        this.conv.set(conv, { relay: n.text || this.profile?.relay || this.config.relay || '', name: n.type });
+        await this.keep(conv);
+        this.tellRelay(conv);
+        const url = this.relayUrlOf(conv);
+        if (url) await this.joinRooms(url);
+        this.sharePush(conv);
+        this.ui.changed(null);
+        break;
+      }
+      case 'link_wants': await this.giveHistory(conv, n.peer, n.text); break;
+      case 'renamed': this.ui.changed(conv); break;
+      case 'unlinked': {
+        if (n.text === 'forget') {
+          this.profile = { ...(await store.profile()), forgetting: true };
+          await store.setProfile(this.profile);
+        }
+        this.ui.unlinked?.(n.text);
+        await this.maybeForgotten();
+        break;
+      }
+      case 'unlinked_peer': this.ui.warn('Your other device was unlinked. Its chats stay with it; yours stay here.'); this.ui.changed(null); break;
+      case 'split_asked': this.ui.splitAsked?.(); break;
+      case 'split_refused': this.ui.warn('Your other device did not agree to that split. Nothing changed.'); this.ui.changed(null); break;
+      case 'left': {
+        // A chat this device left when it was unlinked: kept to read, or gone.
+        const info = this.app.conversations().includes(conv) ? this.info(conv) : null;
+        if (info && !info.left) {
+          try { this.app.removeContact(conv); } catch { /* gone */ }
+          this.conv.delete(conv);
+          await store.forget(conv);
+        }
+        this.ui.changed(null);
+        await this.maybeForgotten();
+        break;
+      }
       case 'warning': this.ui.warn(n.text); break;
       default: break;
     }
@@ -960,8 +1034,9 @@ export class Session {
       if (r.status !== 'accepted' && r.status !== 'duplicate' && r.status !== 'equivocation') await c.forgetRatchetKey(c.hex(f.pub));
     }
     shared.fill(0);
+    if (r.peer && this.isLinked(r.peer)) this.heard(r.peer);
     // What came and what became of it, the last few (for looking, never for deciding).
-    this.opened.push([r.status, r.why || '']);
+    this.opened.push([r.status, r.why || '', (r.conversation || '').slice(0, 6), (r.peer || '').slice(0, 6), env[0], c.hex(env.slice(1, 5))]);
     if (this.opened.length > 64) this.opened.shift();
     await this.pump();
     return r;
@@ -1034,7 +1109,7 @@ export class Session {
       }
       const r = await this.open(item.envelope);
       // Opened and kept (or not ours to keep): the blob goes.
-      if (r.status !== 'need_turn') await relay.del(item.mailbox, [item.handle]).catch(() => {});
+      if (r.status !== 'need_turn' && r.status !== 'later') await relay.del(item.mailbox, [item.handle]).catch(() => {});
     }
   }
   // A sequence still missing after the mailbox's life is a message that will not come.
@@ -1112,7 +1187,7 @@ export class Session {
       if (this.conv.get(id)?.release === s.head) continue;
       try { this.app.postRelease(id, 1, json); } catch { continue; }
       this.conv.set(id, { ...(this.conv.get(id) || {}), release: s.head });
-      await store.saveRecord(id, this.app.save(id), this.conv.get(id));
+      await this.keep(id);
     }
     await this.pump();
   }
@@ -1362,6 +1437,68 @@ export class Session {
     await this.pump();
   }
   conversations() { return this.app ? this.app.conversations() : []; }
+  // The chats a person sees: every conversation but the one of their own linked devices.
+  chats() { return this.conversations().filter((id) => this.app.info(id).kind !== 3); }
+
+  // ---- linked devices (protocol 11) ----
+  selfConv() { return this.app ? this.app.selfConversation() : ''; }
+  isLinked(peer) { return !!peer && !!this.app && this.app.linked().includes(peer); }
+  tellRelay(id) { try { this.app.setRelay(id, this.relayUrlOf(id)); } catch { /* not a conversation here */ } }
+  // When a linked device was last heard from, by wall time (for showing only).
+  heard(peer) {
+    this.lastHeard ??= {};
+    this.lastHeard[peer] = Date.now();
+    if (Date.now() - (this.heardSaved || 0) > 30e3) {
+      this.heardSaved = Date.now();
+      store.profile().then((p) => store.setProfile({ ...p, linkSeen: { ...(p.linkSeen || {}), ...this.lastHeard } })).catch(() => {});
+    }
+  }
+  linkedDevices() {
+    const seen = { ...(this.profile?.linkSeen || {}), ...(this.lastHeard || {}) };
+    return this.app ? this.app.linked().map((peer) => ({ peer, live: this.app.liveWith(peer), heard: seen[peer] || 0,
+      fingerprint: this.app.fingerprintWith(peer) })) : [];
+  }
+  // A linked device asks for messages it lacks: given from what is kept here, each with its key.
+  async giveHistory(conv, peer, wanted) {
+    const want = new Set(String(wanted || '').split(',').filter(Boolean));
+    const items = [];
+    for (const m of await store.messages(conv))
+      if (m.key && m.obs && !m.expired && want.has(m.peer + ':' + m.seq)) items.push({ obs: m.obs, key: m.key });
+    if (!items.length) return;
+    try { this.app.giveHistory(conv, peer, items); } catch { return; }
+    await this.pump();
+  }
+  async unlink(mode) {
+    // Forget: what was said goes from here now; the chats are left (by
+    // handoff), and then everything here is erased.
+    if (mode === 'forget') {
+      this.profile = { ...(await store.profile()), forgetting: true };
+      await store.setProfile(this.profile);
+      for (const id of this.chats())
+        for (const m of await store.messages(id)) if (!m.expired) await store.expireMessage(id, m);
+    }
+    this.app.unlink(mode === 'forget' ? 1 : 2);
+    await this.pump();
+  }
+  async askSplit(mine, theirs) { this.app.askSplit(mine, theirs); await this.pump(); }
+  async agreeSplit() { this.app.agreeSplit(); await this.pump(); }
+  async refuseSplit() { this.app.refuseSplit(); await this.pump(); }
+  // Unlinked with Forget: once every chat is left - and what says so (a
+  // handoff's end, the unlink itself) has gone out, live or to a relay -
+  // nothing of it stays here.
+  async maybeForgotten() {
+    if (!this.profile?.forgetting || !this.app || this.forgetting) return;
+    if (this.chats().some((id) => this.info(id).leaving)) return;
+    const now = Date.now();
+    this.forgetFrom ||= now;
+    const going = (await store.outbox()).filter((o) => !o.relayed && !o.live);
+    if (now - this.forgetFrom < 20e3 || (going.length && now - this.forgetFrom < 120e3)) return;
+    this.forgetting = true;
+    for (const t of this.timers) clearInterval(t);
+    for (const r of this.relays.values()) r.close();
+    await forgetAllHere();
+    this.ui.forgotten?.();
+  }
   info(conv) { return this.app.info(conv); }
 
   // ---- pairing: the owner ----
@@ -1434,7 +1571,8 @@ export class Session {
       throw new Error(invite.relay ? 'This invite needs a relay, and relays are off. Turn them on in Settings, or pair in person.' : 'This invite is for pairing in person: scan the other phone\'s code.');
     this.askRelay = invite.relay;
     await this.ensureDevice();
-    const a = this.app.ask(fragment, code, '', call || '', !!mail);
+    // Linked devices take mail from each other: a device left on fills in one that was away.
+    const a = this.app.ask(fragment, code, '', call || '', !!mail || invite.kind === 6);
     // The relay the invite names (none, if the inviting phone uses none) is
     // the chat's, as for an invite sent as a link - used while relays are on.
     await store.saveAsking({ asking: a.asking, mailbox: a.mailbox, relay: a.relay, owner: invite.owner, made: Date.now() });
