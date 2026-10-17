@@ -97,6 +97,8 @@ def run(args, serve, launch):
                           info: s.app.conversations().includes('{conv}') ? (({{generation, removed, left, leaving}}) => ({{generation, removed, left, leaving}}))(s.info('{conv}')) : null,
                           me: s.app.peer().slice(0, 6), linked: s.app.linked().map(p => p.slice(0, 6)), live: s.app.livePeers().map(p => p.slice(0, 6)),
                           opened: s.opened.slice(-40), mb: s.app.mailboxes().map(m => window.pchat.session.chat.hex(m).slice(0, 8)).slice(0, 80) }}); }})()"""), flush=True)
+                        print('      store', page.evaluate(f"window.pchat.store.messages('{conv}').then(ms => JSON.stringify(ms.slice(-8).map(m => [m.peer.slice(0, 6), m.seq, m.type, m.hidden ? 'h' : '', m.body?.length ? new TextDecoder().decode(m.body).slice(0, 20) : '', m.mine ? 'mine' : ''])))"), flush=True)
+                        print('      later', page.evaluate("JSON.stringify(window.pchat.session.later.map(l => window.pchat.session.chat.hex(l.env.slice(1, 5))))"), flush=True)
                         print('      outbox', page.evaluate(f"window.pchat.store.outbox().then(os => JSON.stringify(os.filter(o => o.conv === '{conv}').map(o => [o.peer.slice(0, 6), o.seq, o.control ? 'c' : 'm', o.waiting ? 'w' : '', o.live ? 'l' : '', o.relayed ? 'r' : '', window.pchat.session.chat.hex(o.env.slice(1, 5))])))"), flush=True)
                     except Exception as e:
                         print('    ', page.name, 'away', e, flush=True)
@@ -197,6 +199,11 @@ def run(args, serve, launch):
             C.evaluate(f"window.pchat.session.send('{pc}', 'while-away-1')")
             C.evaluate(f"window.pchat.session.send('{pc}', 'while-away-2')")
             wait(P, f"{said(P, pc)}.then(s => s.includes('while-away-2'))", 60, 'P has them')
+            # C closes once its own round is done (what it keeps written down), as a person would a moment later.
+            wait(C, "!window.pchat.session.busy", 10, 'C is between rounds')
+            time.sleep(3)
+            print('     C before away:', C.evaluate(f"window.pchat.session.app.describe('{pc}')"), flush=True)
+            print('     P then:', P.evaluate(f"window.pchat.session.app.describe('{pc}')"), flush=True)
             C.goto('about:blank')
             start(D)
             wait(D, f"{said(D, pc)}.then(s => s.includes('while-away-1') && s.includes('while-away-2'))", 120,
@@ -224,7 +231,9 @@ def run(args, serve, launch):
             print('     screenshots in', shots, flush=True)
 
             # ---- 5. Keep: D leaves every chat (C back, to agree), keeping a copy to read ----
+            print('     P before C back:', P.evaluate(f"window.pchat.session.app.describe('{pc}')"), flush=True)
             start(C)
+            print('     C back:', C.evaluate(f"window.pchat.session.app.describe('{pc}')"), flush=True)
             D.evaluate("window.pchat.ui.screen('unlink', {unlinkFrom: window.pchat.session.app.linked()[0]})")
             D.click('[data-test=unlink-keep]')
             wait(D, "window.pchat.session.app.linked().length === 0", 20, 'D is unlinked')

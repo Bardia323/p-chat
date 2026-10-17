@@ -355,6 +355,18 @@ export class Session {
     this.signals = keep;
   }
 
+  // A conversation's record, kept: one write at a time for each, each made
+  // when its turn comes - two writes begun together could otherwise land in
+  // the other order, leaving an older ratchet on disk than the one that sent.
+  keep(id, meta) {
+    const run = () => (this.app.conversations().includes(id)
+      ? store.saveRecord(id, this.app.save(id), meta || this.conv.get(id) || {}) : undefined);
+    this.keeping ??= new Map();
+    const next = (this.keeping.get(id) || Promise.resolve()).then(run, run);
+    this.keeping.set(id, next);
+    return next;
+  }
+
   // ---- the pump: ask, keep, carry, tell ----
   async pump() {
     if (!this.app) return;
@@ -387,7 +399,7 @@ export class Session {
           const meta = { ...this.conv.get(id), name: this.app.info(id).name };
           this.conv.set(id, meta);
           this.tellRelay(id);
-          await store.saveRecord(id, this.app.save(id), meta);
+          await this.keep(id, meta);
         }
         for (const n of this.app.takeNotices()) { any = true; await this.notice(n); }
         for (const o of this.app.takeOutgoing()) { any = true; await this.carry(o); }
@@ -522,7 +534,7 @@ export class Session {
           const via = n.peer ? [...this.conv.entries()].find(([id]) => this.info(id).kind === 0 &&
             this.info(id).members.some((m) => m.peer === n.peer)) : null;
           this.conv.set(conv, { relay: via?.[1].relay || this.profile.relay || this.config.relay, name: n.text });
-          await store.saveRecord(conv, this.app.save(conv), this.conv.get(conv));
+          await this.keep(conv);
           await this.joinRooms(this.conv.get(conv).relay);
         }
         this.sharePush(conv);
@@ -540,7 +552,7 @@ export class Session {
       case 'linked_chat': {
         // A chat given by this person's other device: on its relay.
         this.conv.set(conv, { relay: n.text || this.profile?.relay || this.config.relay || '', name: n.type });
-        await store.saveRecord(conv, this.app.save(conv), this.conv.get(conv));
+        await this.keep(conv);
         this.tellRelay(conv);
         const url = this.relayUrlOf(conv);
         if (url) await this.joinRooms(url);
@@ -905,7 +917,7 @@ export class Session {
       if (this.conv.get(id)?.release === s.head) continue;
       try { this.app.postRelease(id, 1, json); } catch { continue; }
       this.conv.set(id, { ...(this.conv.get(id) || {}), release: s.head });
-      await store.saveRecord(id, this.app.save(id), this.conv.get(id));
+      await this.keep(id);
     }
     await this.pump();
   }

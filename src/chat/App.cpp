@@ -1043,14 +1043,20 @@ Opened App::open(const Bytes& envelope, const Key32& shared, const std::optional
         // one of this generation must also be this conversation's in form.
         if (o.tick == c.generation) check_message(o, c.id, c.generation);
         const auto content = open_content(content_key, o);
-        if (next) {
-            const auto old = c.ratchets.at(p).own;
-            c.ratchets[p] = *next;
-            if (old != next->own && old != self_.agree) notices_.push_back({"retire_key", c.hexid, p, hex(old)});
-        }
-        dirty_.insert(c.hexid);
+        const auto cid = c.hexid;
         auto out_ = deliver(c, o, content, p, content_key);
         wipe(content_key);
+        // The ratchet moves on only for a message taken: one refused (a
+        // generation retired, not authentic) leaves it as it was - a turn
+        // kept for it would rest on a fresh key the host then forgets.
+        if (next && (out_.status == "accepted" || out_.status == "duplicate" || out_.status == "equivocation") && conversations_.count(cid)) {
+            auto& here = conv(cid);
+            const auto found = here.ratchets.find(p);
+            const auto old = found != here.ratchets.end() ? found->second.own : Key32{};
+            here.ratchets[p] = *next;
+            if (old != next->own && old != self_.agree) notices_.push_back({"retire_key", cid, p, hex(old)});
+        }
+        dirty_.insert(cid);
         out_.peer = p;
         return out_;
     } catch (const std::exception& ex) {
@@ -2578,6 +2584,9 @@ std::string App::describe(const std::string& id) const {
     s += ", early " + std::to_string(c.early.size()) + ", secrets";
     for (const auto& k : c.secrets) s += " " + std::to_string(k.generation) + ":" + hex(k.key).substr(0, 4);
     if (c.going) s += ", leaving: " + std::to_string(c.going->votes.size()) + " endorsements";
+    s += ", ratchets";
+    for (const auto& [p, r] : c.ratchets)
+        s += " " + p.substr(0, 6) + ":" + hex(r.own).substr(0, 4) + "/" + std::to_string(r.ns) + "|" + hex(r.theirs).substr(0, 4) + "/" + std::to_string(r.nr);
     if (c.change) {
         const auto& ch = *c.change;
         s += std::string(", change ") + (ch.add ? "add " : "remove ") + std::to_string(ch.members.size());
