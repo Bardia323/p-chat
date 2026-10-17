@@ -1,5 +1,28 @@
 # Changelog
 
+## v1.7 (2026-10-17): faster, linked, and a device that relays (protocol 11)
+
+- Messages between devices arrive at once: a few milliseconds over a live
+  link (was half a second to a second), about a round trip by the relay
+  (was three seconds). The relay now says when mail is waiting instead of
+  being asked every four seconds; a phone coming back checks its relay
+  connection and links at once.
+- Linked devices: your phone and computer as one you. Invite → "My other
+  device" (or Settings → Linked devices). Every chat comes onto the other
+  device with its history; new chats include both; names follow; each
+  device sees the others, online or last heard. Unlink by keeping a copy to
+  read, forgetting everything, or splitting the chats (both agree).
+- This device relays (Settings): a computer left open keeps its contacts'
+  sealed mail and helps their devices find each other, with no relay.
+- Link again in person: two paired devices that lost every link make one
+  from two codes.
+- p-chat on a computer is a desktop app: both panes fill the window, every
+  screen laid out for it.
+- Fixed: a message refused after its ratchet turn broke every later one
+  from that device; a handoff could stall on an old vote; two handoffs in a
+  row could extend an epoch already closed; a message from a generation not
+  reached yet is now kept and opened later.
+
 ## v1.6 (2026-10-16): p-chat on a computer
 
 - A wide window (900 px and more) shows the chats in a pane of their own on

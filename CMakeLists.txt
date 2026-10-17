@@ -140,9 +140,21 @@ else()
     add_test(NAME sgchat_release_browser COMMAND ${SGCHAT_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_browser.py release
              --wasm ${CMAKE_CURRENT_BINARY_DIR} --browser ${SGCHAT_BROWSER})
     set_tests_properties(sgchat_release_browser PROPERTIES TIMEOUT 900 RUN_SERIAL TRUE)
-    # Protocol 10 in real browsers: pairing in person, contacts carrying, no relay.
+    # In real browsers: pairing in person, contacts carrying, devices relaying, no relay.
     add_test(NAME sgchat_meet COMMAND ${SGCHAT_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_browser.py meet
              --wasm ${CMAKE_CURRENT_BINARY_DIR} --browser ${SGCHAT_BROWSER})
     set_tests_properties(sgchat_meet PROPERTIES TIMEOUT 900 RUN_SERIAL TRUE)
+    # Protocol 11: how fast a message gets between devices, live and by relay.
+    add_test(NAME sgchat_lag COMMAND ${SGCHAT_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_browser.py lag
+             --wasm ${CMAKE_CURRENT_BINARY_DIR} --browser ${SGCHAT_BROWSER})
+    set_tests_properties(sgchat_lag PROPERTIES TIMEOUT 900 RUN_SERIAL TRUE)
+    # The wide layout on a desktop window.
+    add_test(NAME sgchat_desktop COMMAND ${SGCHAT_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_browser.py desktop
+             --wasm ${CMAKE_CURRENT_BINARY_DIR} --browser ${SGCHAT_BROWSER})
+    set_tests_properties(sgchat_desktop PROPERTIES TIMEOUT 900 RUN_SERIAL TRUE)
+    # Protocol 11: linked devices, linking, syncing, the three unlinks.
+    add_test(NAME sgchat_link_browser COMMAND ${SGCHAT_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_browser.py link
+             --wasm ${CMAKE_CURRENT_BINARY_DIR} --browser ${SGCHAT_BROWSER})
+    set_tests_properties(sgchat_link_browser PROPERTIES TIMEOUT 900 RUN_SERIAL TRUE)
   endif()
 endif()

@@ -1,8 +1,8 @@
 # Progress
 
-All phases done; every gate passes. Native: 8 tests. Wasm, Node and a real
-headless browser (Chrome for Testing 155): 3 tests, the last the whole app
-end to end. Built against the engine at `c0e4919` (pinned), on this server.
+All phases done; every gate passes: native 13 tests, the Wasm suite 10
+(Node and headless Chrome for Testing 155). Built against the engine at
+`c0e4919` (pinned), on this server.
 
 ## Phase 0: skeleton - done
 
@@ -675,3 +675,27 @@ reload; names chosen for oneself.
 
 Runs: native 13 of 13, the Wasm suite 7 of 7; `sgchat_meet` 9 in a row
 after the last change (it had failed every run before it).
+
+## v1.7 Four at once - done (protocol 11)
+
+Four agents in worktrees, merged on `integrate`:
+- Lag: measured with `tests/lag_browser.py` (relay 80 ms away). Live p50
+  488 -> 5 ms, relay only 3121 -> 168 ms, reopened 3 s -> 162 ms. The host
+  pumps on the links' own events; signals batched, none dropped; relay op 4
+  `watch` and pushed `0x41` (relay.py and the Worker).
+- Desktop: the wide layout fills the window; `tests/desktop_browser.py`,
+  `tests/desktop_shots.py`.
+- A device that relays: carry frames 8 `relays` and 9 `serves`; the `#l1.`
+  code to link again in person; `sgchat_meet` part 3.
+- Linked devices: invite kind 6, conversation kind 3 (made by `contact.add`),
+  `linked_chat`, `device_ask`, `unlink`, `link_name`, controls 13-18; "read
+  only" is the conversation's `left` param set by the `CONV.leave` arrow;
+  `device.add`/`device.revoke` take every device of a handoff in one
+  generation step. Content version 11. Link timing is App machinery on the
+  host's `now`; no clock in the world.
+
+Runs: native 13 of 13; the Wasm suite 10 (lag, desktop and link added): 9 of 10
+in the whole run, `sgchat_link_browser` timing out at Forget ("T has both
+chats") and Split; alone it then passed 5 runs in a row. Open: why only
+after the others.
+

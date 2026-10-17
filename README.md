@@ -30,7 +30,10 @@ whiteboard; bots; and releases signed by a committee of the owner's devices,
 taken from the site or from a contact's phone, every one checked. And no
 middleman needed: pairing in person with no relay, contacts passing each
 other's signals on and keeping each other's sealed messages, relays off
-altogether (Settings), any relay - the one it came with, a friend's, your own.
+altogether (Settings), any relay - the one it came with, a friend's, your own,
+or a device of yours left open ("This device relays"). Your phone and
+computer linked as one you: every chat on both, history given, kept in step,
+and unlinked by keeping a copy, forgetting everything, or splitting the chats.
 
 ## What it protects, and what it does not
 
@@ -119,9 +122,13 @@ or reordered message shows.
 - A lost phone is replaced by the others' approval and a day's wait (Devices,
   "Replace: lost"); a chat set to "No recovery" cannot be, and its history
   dies with the phone.
-- A further device is invited for the friend's side; the owner's side gets
-  one only by replacing a lost one (the protocol carries more; the app does
-  not invite a second owner device yet).
+- Linked devices (your phone and computer as one you) are trusted on your
+  word: a contact's chat takes your new linked device as it would a further
+  device of yours, by your devices' handoff, without asking the contact.
+  Linking is by link and six words only (no in-person code for it yet).
+- Between networks (a phone on mobile data, a computer at home) a live link
+  needs a path STUN alone cannot always find; with no TURN, messages then go
+  by the relay's mailbox (a round trip or two) and calls may not connect.
 
 **Not tried on real phones** (everything below ran in desktop Chrome, in
 tests, on one machine): pairing in person with real cameras and screens,
@@ -181,7 +188,10 @@ Python; `SGCHAT_ECHO` where the browser test finds the echo bot.
 | `sgchat_vectors_node` | the vectors made in Wasm and by WebCrypto under Node |
 | `sgchat_browser_vectors` | the same in a real headless browser |
 | `sgchat_direct` | protocol 10 in Node: in-person codes made and read back (Chrome's, Firefox's, Safari's descriptions), refusals; a carrier's rules - passing on, keeping, giving back, bounds, rates, a phone that does not carry |
-| `sgchat_meet` | protocol 10 in Chrome: two phones with relays off pair in person (both codes read off the screen by jsQR) and talk, never opening a relay connection; three phones, one never using a relay: a lost link found again through a contact, a message kept by the contact while its recipient is away and given back |
+| `sgchat_meet` | protocols 10 and 11 in Chrome (part 3: a device that relays, kept mail given across its reload, linking again in person): two phones with relays off pair in person (both codes read off the screen by jsQR) and talk, never opening a relay connection; three phones, one never using a relay: a lost link found again through a contact, a message kept by the contact while its recipient is away and given back |
+| `sgchat_lag` | protocol 11 in Chrome: how long a message takes between two browsers, live and by a relay 80 ms away, reopened and woken (live p50 5 ms, relay only 168 ms) |
+| `sgchat_desktop` | the wide layout's facts at 1280x800 and larger; the phone's layout unchanged |
+| `sgchat_link_browser` | protocol 11 in Chrome: linking a phone and a computer, every chat and its history on both, names, the linked devices screen, Keep, Forget and Split |
 | `sgchat_e2e` | p-chat in real browsers end to end: pairing, files, groups, a channel, disappearing messages, notifications, a call, going live, speakers through a tree, table tennis, the whiteboard, an update from a contact's phone, recovery, a bot, cleared storage, the signed bundle, the relay's memory |
 
 p-chat has a light look (the cream VHS sleeve) and a dark one (the black
