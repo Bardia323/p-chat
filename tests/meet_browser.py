@@ -360,6 +360,17 @@ def parts_before(browser, url, work, phone, relays_off, meet, peer, linked, said
     M.click('[data-test=send]')
     wait(M, "(() => { const t = document.querySelector('.tape'); return [...t.querySelectorAll('[data-test=mine]')].some(e => e.textContent.includes('said-and-seen-SS1')) "
             "&& t.scrollHeight - t.scrollTop - t.clientHeight < 4; })()", 20, 'what was sent is in sight: the list goes to its end')
+    # Sent while the session's round is held up (a slow push service, a big
+    # file coming in): shown at once, waiting, and then as sent.
+    M.evaluate("window.pchat.session.busy = true")
+    M.fill('[data-test=message]', 'shown-at-once-SA1')
+    M.click('[data-test=send]')
+    wait(M, "Array.from(document.querySelectorAll('[data-test=mine]')).some(e => e.textContent.includes('shown-at-once-SA1') && e.textContent.includes('◷'))",
+         3, 'what is sent shows at once, waiting, even with the round held up')
+    M.evaluate("(() => { const s = window.pchat.session; s.busy = false; s.pump(); })()")
+    wait(N, f"{said(N, nm)}.then(s => s.includes('shown-at-once-SA1'))", 30, 'and it goes once the round is free')
+    wait(M, "Array.from(document.querySelectorAll('[data-test=mine]')).filter(e => e.textContent.includes('shown-at-once-SA1')).length === 1 "
+            "&& !document.querySelector('.msg.pending')", 20, 'shown once, as itself, no longer waiting')
     # Something new while reading further up: said below, and a tap goes to it.
     for i in range(14):
         N.evaluate(f"window.pchat.session.send('{nm}', 'filler-{i}')")

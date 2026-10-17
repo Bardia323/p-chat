@@ -557,6 +557,10 @@ async function renderChat(first) {
       h('span', { class: 'meta', 'data-status': m.mine ? m.status || 'sent' : null },
         h('bdi', { dir: 'ltr' }, when(m.time), m.mine ? ' ' + STATUS_MARK[m.status || 'sent'] : ''))));
   }
+  // Sent this moment and not yet made by the App: shown at once, waiting.
+  for (const u of session.sending(id))
+    tape.append(h('div', { class: 'msg mine pending', dir: 'auto', 'data-test': 'mine' }, u.text,
+      h('span', { class: 'meta', 'data-status': 'queued' }, h('bdi', { dir: 'ltr' }, when(u.time), ' ' + STATUS_MARK.queued))));
   const banners = [];
   // Left when it was unlinked: a copy to read, said plainly.
   if (info.left || info.leaving) banners.push(h('div', { class: 'banner', 'data-test': 'left' }, h('b', {}, info.leaving && !info.removed ? 'Leaving' : 'Read only'),
@@ -808,7 +812,6 @@ function recoveryBanner(id, info) {
 async function renderInvite() {
   if (state.invite?.link) return renderInviteShown();
   const contacts = session.chats().filter((id) => session.info(id).side === 0 && session.info(id).kind === 0);
-  const pick = h('select', { 'data-test': 'for' }, contacts.map((id) => h('option', { value: id }, session.info(id).name)));
   if (state.screen !== 'invite') return;
   const meet = async () => {
     try {
@@ -818,29 +821,43 @@ async function renderInvite() {
     } catch (e) { toast(e.message); }
   };
   const linked = session.relayOn();
-  const make = async (kind) => {
+  const make = async (kind, conv = '') => {
     try {
-      const conv = kind === KIND.contact || kind === KIND.link ? '' : pick.value;
-      if (kind !== KIND.contact && kind !== KIND.link && !conv) { toast('Pick whose device it is.'); return; }
       const made = await session.invite(kind, conv);
       state.invite = { ...made, kind, conv };
       renderInviteShown();
     } catch (e) { toast(e.message); }
   };
+  // A device for a contact: whose is asked only then (and not at all when
+  // there is one contact, or it was asked from that contact's devices).
+  const forWhom = (kind) => {
+    if (contacts.length === 1) return make(kind, contacts[0]);
+    state.invite = { pick: kind };
+    renderInvite();
+  };
+  const p = state.invite?.pick;
+  if (p && state.invite.conv) return make(p, state.invite.conv);
+  if (p) {
+    draw(head(p === KIND.reusable ? 'Reusable key for…' : 'Another device of…', { back: () => { state.invite = null; renderInvite(); } }),
+      h('main', {}, h('div', { class: 'pad' }, h('p', { class: 'caps light' }, 'Whose device is it?')),
+        h('div', { class: 'choices', 'data-test': 'for' }, contacts.map((id) =>
+          h('button', { class: 'choice amber', 'data-test': 'for-contact', dir: 'auto', onclick: () => make(p, id) },
+            h('p', { class: 'caps' }, session.info(id).name))))));
+    return;
+  }
   draw(head('Invite', { back: () => show('contacts') }), h('main', {}, h('div', { class: 'choices' },
     h('button', { class: 'choice yellow', 'data-test': 'kind-code', onclick: meet },
       h('p', { class: 'caps' }, 'A new contact'), h('p', { class: 'caps light' }, 'They scan your code, or open your link')),
     h('button', { class: 'choice amber', 'data-test': 'kind-contact', onclick: () => make(KIND.contact), disabled: !linked },
       h('p', { class: 'caps' }, 'A new contact, with six words'), h('p', { class: 'caps light' }, 'Safer from afar: the link alone is not enough')),
-    h('button', { class: 'choice orange', 'data-test': 'kind-extra', onclick: () => make(KIND.extra), disabled: !contacts.length || !linked },
+    h('button', { class: 'choice orange', 'data-test': 'kind-extra', onclick: () => forWhom(KIND.extra), disabled: !contacts.length || !linked },
       h('p', { class: 'caps' }, 'Another device of…'), h('p', { class: 'caps light' }, 'One more phone or computer for a contact')),
-    h('button', { class: 'choice red', 'data-test': 'kind-reusable', onclick: () => make(KIND.reusable), disabled: !contacts.length || !linked },
+    h('button', { class: 'choice red', 'data-test': 'kind-reusable', onclick: () => forWhom(KIND.reusable), disabled: !contacts.length || !linked },
       h('p', { class: 'caps' }, 'Reusable device key for…'), h('p', { class: 'caps light' }, 'Works until you cancel it')),
     h('button', { class: 'choice violet', 'data-test': 'kind-link', onclick: () => make(KIND.link), disabled: !linked },
       h('p', { class: 'caps' }, 'My other device'), h('p', { class: 'caps light' }, 'Link your phone and computer: one you, every chat on both'))),
     h('div', { class: 'pad' },
       linked ? null : h('p', { class: 'fine', 'data-test': 'relay-off-note' }, 'Relays are off (Settings), so invites go in person only.'),
-      contacts.length ? h('label', { class: 'field' }, h('span', {}, 'Whose device'), pick) : null,
       h('button', { class: 'btn light', 'data-test': 'scan-code', onclick: () => scanned() }, 'They showed you a code? Scan it'))));
 }
 function renderInviteShown() {
@@ -1211,7 +1228,7 @@ function renderDevices() {
     info.kind !== 2 ? options : null), h('div', { class: 'col' },
     rows,
     h('div', { class: 'pad' },
-      owner && info.kind === 0 ? h('button', { class: 'btn light', onclick: () => { state.invite = null; show('invite'); } }, 'Add a device for ' + info.name) : null,
+      owner && info.kind === 0 ? h('button', { class: 'btn light', onclick: () => show('invite', { invite: { pick: KIND.extra, conv: id } }) }, 'Add a device for ' + info.name) : null,
       owner && info.kind === 2 ? h('button', { class: 'btn light', 'data-test': 'invite-readers', onclick: async () => {
         try {
           const made = await session.invite(4, id, '');

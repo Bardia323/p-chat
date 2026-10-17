@@ -218,7 +218,7 @@ export class Relay {
 export class Session {
   constructor(chat, ui) {
     Object.assign(this, { chat, ui, app: null, dev: null, relays: new Map(), conv: new Map(), busy: false, again: false,
-      media: null, timers: [], want: 0, told: new Set(), seenPosts: new Set(), later: [], config: { ice: [] }, sentLive: 0, sentMailbox: 0, queued: 0, signals: [], joined: new Set(), pinged: new Map(), pushes: [], statuses: new Map(), relinked: new Map(), opened: [], posts: new Set() });
+      media: null, timers: [], want: 0, told: new Set(), seenPosts: new Set(), later: [], config: { ice: [] }, sentLive: 0, sentMailbox: 0, queued: 0, signals: [], joined: new Set(), pinged: new Map(), pushes: [], statuses: new Map(), relinked: new Map(), opened: [], posts: new Set(), unsaid: new Map() });
   }
 
   // ---- starting ----
@@ -659,6 +659,10 @@ export class Session {
     switch (n.kind) {
       case 'sent': case 'resent': case 'message': {
         if (n.kind === 'resent') break;
+        if (n.kind === 'sent' && n.type === 'text') {
+          const mine = this.unsaid.get(conv) || [], i = mine.findIndex((u) => u.time === n.time);
+          if (i >= 0) mine.splice(i, 1);
+        }
         // Said by this person's other (linked) device: theirs is this person's own.
         if (n.kind === 'message' && this.isLinked(n.peer)) { this.heard(n.peer); n = { ...n, kind: 'sent', linkedFrom: true }; }
         if (n.type === 'file') {
@@ -852,7 +856,7 @@ export class Session {
         this.queued++;
         await store.saveOutbox(id, { ...item, waiting: true });
         await this.status(o, 'queued');
-        await this.ping(o);
+        this.pingLater(o);
         return;
       }
       if (!target) {
@@ -869,7 +873,7 @@ export class Session {
       await store.saveOutbox(id, { ...item, url: target.url });
       await this.putOut(id, target, env, o.sequence > 0);
       await this.status(o, 'mailbox');
-      await this.ping(o);
+      this.pingLater(o);
     } else if (o.kind === 'pair') {
       const e = await c.ephemeral(o.agree);
       const box = this.chat.seal(o.purpose, o.agree, o.plain, e.pub, e.shared);
@@ -1006,7 +1010,7 @@ export class Session {
       if (o.ping && !o.pinged && o.live && now - o.live > ACK_WAIT_MS) {
         o.pinged = true;  // kept by the saves below too
         await store.saveOutbox(o.id, o);
-        await this.ping({ ping: true, conversation: o.conv, peer: o.peer, sequence: o.seq });
+        this.pingLater({ ping: true, conversation: o.conv, peer: o.peer, sequence: o.seq });
       }
       if (o.live && !o.relayed && now - o.live > ACK_WAIT_MS) {
         // Sent live and not acknowledged: the link may say it is up and
@@ -1340,6 +1344,9 @@ export class Session {
   }
   // A message that could not go live: its recipient is woken, if it asked to
   // be. One ping id per message (retries show once); one push a while.
+  // A push goes out beside the round, never in its way: what is said next
+  // is not held back by a push service's answer.
+  pingLater(o) { this.ping(o).catch(() => {}); }
   async ping(o) {
     if (!o.ping || !o.conversation || !o.sequence) return;
     const info = await store.pushTo(o.peer);
@@ -1360,7 +1367,20 @@ export class Session {
 
   // ---- the UI fires and sends ----
   reachable(conv) { if (!this.canSend(conv)) throw new Error('Not linked to them, and no relay: nothing can be sent now.'); }
-  async send(conv, text) { this.reachable(conv); this.app.post(conv, text, Date.now()); await this.pump(); }
+  // What is sent is shown at once, waiting (◷), until the App has made it
+  // (signed, numbered): then it is the message itself.
+  async send(conv, text) {
+    this.reachable(conv);
+    const time = Date.now();
+    this.app.post(conv, text, time);
+    const mine = this.unsaid.get(conv) || [];
+    mine.push({ text, time });
+    this.unsaid.set(conv, mine);
+    this.ui.changed(conv);
+    await this.pump();
+  }
+  // Sent and not yet made, for showing.
+  sending(conv) { return this.unsaid.get(conv) || []; }
   async sendFile(conv, file, kind) { this.reachable(conv); await this.media.send(conv, await this.media.prepare(file, kind)); }
   async sendPrepared(conv, prepared) { this.reachable(conv); await this.media.send(conv, prepared); }
   async read(conv) { this.app.read(conv); await this.pump(); }

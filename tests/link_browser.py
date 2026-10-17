@@ -189,6 +189,17 @@ def run(args, serve, launch):
             wait(D, f"{said(D, pe)}.then(s => s.includes('hi-from-eli'))", 60, 'D hears the new contact')
             P.evaluate(f"window.pchat.session.rename('{pe}', 'Eli at work')")
             wait(D, f"window.pchat.session.info('{pe}').name === 'Eli at work'", 30, 'a name given on P is the name on D')
+            # Whose device is asked only once it is a device for a contact.
+            P.evaluate("window.pchat.ui.screen('invite', {invite: null})")
+            P.wait_for_selector('[data-test=kind-extra]')
+            check(not P.query_selector('[data-test=for]') and 'Whose device' not in P.text_content('main'),
+                  'the invite screen does not ask whose device before one is chosen')
+            P.click('[data-test=kind-extra]')
+            P.wait_for_selector('[data-test=for-contact]')
+            names = P.evaluate("Array.from(document.querySelectorAll('[data-test=for-contact]')).map(e => e.textContent)")
+            check(sorted(names) == ['Cy', 'Eli at work'] and 'Whose device' in P.text_content('main'),
+                  f'"Another device of…" then asks whose, naming each contact ({names})')
+            P.evaluate("window.pchat.ui.screen('contacts', {})")
 
             # ---- 3. D away; C says something and goes; P, left on, fills D in ----
             D.evaluate(f"window.pchat.session.setDelivery('{pc}', false)")

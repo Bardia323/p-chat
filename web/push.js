@@ -76,6 +76,8 @@ export async function send(info, payload, forward) {
     const r = await fetch(info.endpoint, {
       method: 'POST', mode: 'cors', credentials: 'omit', referrerPolicy: 'no-referrer', body,
       headers: { Authorization: authorization, TTL: '86400', Urgency: 'high', 'Content-Encoding': 'aes128gcm', 'Content-Type': 'application/octet-stream' },
+      // A push service that does not answer is given up on, not waited for.
+      signal: AbortSignal.timeout?.(10000),
     });
     if (r.ok) return 'direct';
     if (r.status === 404 || r.status === 410) return 'gone';

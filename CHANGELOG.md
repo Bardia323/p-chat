@@ -1,5 +1,16 @@
 # Changelog
 
+## v1.12 (2026-10-17): what you send shows at once
+
+- What you send is in the chat the moment you press send, waiting (◷),
+  then sent (✓) - before, it could show only once a push to the other
+  phone had been answered, which with an unreachable push service could
+  take very long. Pushes now go out beside everything else, and one that is
+  not answered in 10 s is given up.
+- Invite: "Whose device" is asked only after "Another device of…" or
+  "Reusable device key for…", as a list of your contacts (not at all with
+  one contact, or from a contact's own Devices screen).
+
 ## v1.11 (2026-10-17): nothing left unsent; a new message below; right to left
 
 - A message sent into a link that had already dropped (a phone asleep)
