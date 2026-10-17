@@ -165,13 +165,33 @@ function preview(m) {
 function draw(...nodes) {
   root.replaceChildren(...nodes);
   if (!entering) return;
-  // Entered: in from the side it lies on, with a pass of the tape's tracking.
+  // Entered: in from the side it lies on; what is on it comes clear.
   root.classList.remove('enter', 'from-right', 'from-left');
   void root.offsetWidth;
   root.classList.add('enter', entering);
   entering = null;
+  clearTimeout(draw.done);
+  draw.done = setTimeout(() => root.classList.remove('enter', 'from-right', 'from-left'), 600);
 }
-root.addEventListener('animationend', (e) => { if (e.target === root) root.classList.remove('enter', 'from-right', 'from-left'); });
+// A key goes in the moment a finger is on it (a phone's :active comes only
+// once it knows the touch is no scroll), and stays in long enough to be seen.
+{
+  let down = null, since = 0;
+  const up = () => {
+    const el = down;
+    down = null;
+    if (el) setTimeout(() => el.classList.remove('down'), Math.max(0, 90 - (performance.now() - since)));
+  };
+  addEventListener('pointerdown', (e) => {
+    const el = e.target.closest?.('button:not([disabled]), .spine, .choice');
+    if (!el) return;
+    up();
+    down = el;
+    since = performance.now();
+    el.classList.add('down');
+  }, { capture: true, passive: true });
+  for (const ev of ['pointerup', 'pointercancel', 'dragstart']) addEventListener(ev, up, { capture: true, passive: true });
+}
 const shortId = (peer) => peer.slice(0, 4) + '…' + peer.slice(-4);
 const when = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const day = (t) => new Date(t).toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' });
@@ -597,20 +617,21 @@ async function renderChat(first) {
       h('button', { class: 'btn light', 'data-test': 'decline', onclick: () => { state.ringing.delete(id); session.calls.decline(ringing.call); renderChat(false); } }, 'Decline'))));
   if (missing.length) banners.push(h('div', { class: 'banner', 'data-test': 'missing' }, h('b', {}, 'Message missing'),
     missing.length + (missing.length === 1 ? ' message was' : ' messages were') + ' sent but never arrived. ' + (missing.length === 1 ? 'It' : 'They') + ' may have been lost on the way.'));
-  // No relay and no link to them: nothing can reach them, so nothing is sent
-  // (one side moving on alone is what a chat must never do).
+  // No relay and no link to them: nothing reaches them now. What is written
+  // waits here and goes once they are linked again; files wait for that.
   const cut = !info.removed && !session.canSend(id);
   // Cut off: say why and the two ways back, right here.
-  if (cut && !info.left && !info.leaving) banners.push(h('div', { class: 'banner', 'data-test': 'cut' }, h('b', {}, 'Not reachable'),
-    session.relayOn() ? 'No link to them, and this chat has no relay. Link again: one of you shows a code, the other scans it.'
-      : 'Relays are off and the link between you dropped (a phone asleep is enough). Link again in person, or turn a relay on: it only passes locked messages.',
+  if (cut && !info.left && !info.leaving) banners.push(h('div', { class: 'banner', 'data-test': 'cut' }, h('b', {}, 'Not reachable now'),
+    (session.relayOn() ? 'No link to them, and this chat has no relay.' : 'Relays are off and the link between you dropped (a phone asleep is enough).')
+      + ' Messages wait here and go when you are linked again. To link now: one of you shows a code, the other scans it'
+      + (session.relayOn() ? '.' : ', or turn a relay on: it only passes locked messages.'),
     h('div', { class: 'row' },
       h('button', { class: 'btn', 'data-test': 'cut-relink', onclick: () => show('relink', { relink: null, relinkCode: null, relinkLink: null, relinkDone: false, relinkFrom: id }) }, 'Link again'),
       session.relayOn() ? null : h('button', { class: 'btn light', 'data-test': 'cut-relay', onclick: async () => { await session.setRelay(true); renderChat(false); } }, 'Turn a relay on'))));
   const shut = info.removed || info.left || info.leaving;
-  const input = h('textarea', { rows: 1, placeholder: info.left || info.leaving ? 'Read only' : info.removed ? 'Removed' : cut ? 'Not linked to them, and no relay: can\'t send now' : 'Message',
-    disabled: shut || cut, 'data-test': 'message', dir: 'auto', maxlength: 20000, 'aria-label': 'Message' });
-  const key = h('button', { class: 'key', 'data-test': 'send', 'aria-label': 'Send', title: 'Send', disabled: shut || cut });
+  const input = h('textarea', { rows: 1, placeholder: info.left || info.leaving ? 'Read only' : info.removed ? 'Removed' : cut ? 'Message (goes when linked)' : 'Message',
+    disabled: shut, 'data-test': 'message', dir: 'auto', maxlength: 20000, 'aria-label': 'Message' });
+  const key = h('button', { class: 'key', 'data-test': 'send', 'aria-label': 'Send', title: 'Send', disabled: shut });
   // The key sends what is written; with nothing written it records a voice
   // note (tap, speak, tap again), and while recording it stops.
   const KEY = {
@@ -633,7 +654,7 @@ async function renderChat(first) {
   input.addEventListener('input', grow);
   const send = async () => {
     const t = input.value.trim();
-    if (!t || !session.canSend(id)) return;
+    if (!t) return;
     input.value = '';
     grow();
     key.classList.remove('fire');
@@ -742,9 +763,9 @@ async function renderChat(first) {
     root.querySelector('#app > main').replaceWith(body);
     const ki = kept.querySelector('[data-test=message]');
     if (ki) { ki.disabled = input.disabled; ki.placeholder = input.placeholder; }
-    for (const test of ['send', 'attach']) {
+    for (const [test, off] of [['send', shut], ['attach', shut || cut]]) {
       const k = kept.querySelector(`[data-test=${test}]`);
-      if (k) k.disabled = shut || cut;
+      if (k) k.disabled = off;
     }
   } else {
     draw(chathead, body,

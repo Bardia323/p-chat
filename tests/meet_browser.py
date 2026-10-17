@@ -396,6 +396,16 @@ def parts_before(browser, url, work, phone, relays_off, meet, peer, linked, said
     check(ends['rtl']['left'] < 20 and ends['rtl']['right'] > 40, f'right to left: the time is at the left end ({ends["rtl"]})')
     check(ends['ltr']['right'] < 20 and ends['ltr']['left'] > 40, f'left to right: the time is at the right end ({ends["ltr"]})')
     M.screenshot(path=str(work / 'rtl-time.png'))
+    # A key goes in the moment the finger is down, not after: held, it is in at once; let go elsewhere, it comes out (and nothing is pressed).
+    b = M.locator('[data-test=devices]').bounding_box()
+    M.mouse.move(b['x'] + b['width'] / 2, b['y'] + b['height'] / 2)
+    M.mouse.down()
+    check(M.evaluate("(() => { const k = document.querySelector('[data-test=devices]'); return k.classList.contains('down') && getComputedStyle(k).transform !== 'none' "
+                     "&& getComputedStyle(k).transitionDuration.split(',').every(d => parseFloat(d) === 0); })()"),
+          'a key is in at once, as the finger goes down')
+    M.mouse.move(b['x'] + b['width'] / 2, b['y'] + 300)
+    M.mouse.up()
+    wait(M, "!document.querySelector('.down') && window.pchat.state.screen === 'chat'", 2, 'and out again when it is lifted')
     wait(M, "window.pchat.session.pairing === null", 60, 'the link made to pair is closed once their own is up')
     M.evaluate("window.pchat.ui.screen('invite', {invite: null})")
     M.click('[data-test=scan-code]')
@@ -429,17 +439,22 @@ def parts_before(browser, url, work, phone, relays_off, meet, peer, linked, said
     check(H.evaluate('window.pchat.session.carrier.done.passed') > passed, 'H passed the signals on')
     X.evaluate(f"window.pchat.session.send('{xy}', 'found-again-FA1')")
     wait(Y, f"{said(Y, yx)}.then(s => s.includes('found-again-FA1'))", 30, 'and they talk again')
-    # Y away, and X has no relay: nothing can reach Y, so X cannot send (one side never moves on alone).
+    # Y away, and X has no relay: nothing reaches Y now. What X says waits on X's side (◷), kept, and goes once they are linked again.
     check(Y.evaluate("new Promise(r => { const o = indexedDB.open('p-chat'); o.onsuccess = () => { "
                      "const q = o.result.transaction('keys').objectStore('keys').get('device'); q.onsuccess = () => r(!!q.result.sign.wrapped); }; })"),
           'Y\'s browser cannot keep its key as it is (an iPhone\'s): kept wrapped')
     Y.goto('about:blank')
     wait(X, f"!{linked(X, Y)}", 60, 'Y is away')
     X.evaluate(f"window.pchat.ui.screen('chat', {{conv: '{xy}'}})")
-    wait(X, "document.querySelector('[data-test=message]')?.disabled && document.querySelector('[data-test=send]')?.disabled", 20,
-         'X\'s chat with Y says it cannot send now')
-    refused = X.evaluate(f"window.pchat.session.send('{xy}', 'never-sent-NS1').then(() => false, () => true)")
-    check(refused and not X.evaluate(f"{said(X, xy)}.then(s => s.includes('never-sent-NS1'))"), 'and nothing is sent: not even on X\'s side')
+    wait(X, "!!document.querySelector('[data-test=cut]') && !document.querySelector('[data-test=message]')?.disabled && !document.querySelector('[data-test=send]')?.disabled", 20,
+         'X\'s chat with Y says it cannot reach Y now, and still takes a message')
+    X.fill('[data-test=message]', 'waits-for-Y-WY1')
+    X.click('[data-test=send]')
+    wait(X, "[...document.querySelectorAll('[data-test=mine]')].some(e => e.textContent.includes('waits-for-Y-WY1') && e.querySelector('[data-status=queued], [data-status=mailbox]'))", 10,
+         'what X said is shown at once, waiting')
+    X.fill('[data-test=message]', 'waits-for-Y-WY2')
+    X.click('[data-test=send]')
+    wait(X, "window.pchat.store.outbox().then(o => o.filter(x => x.waiting && x.seq > 0).length >= 2)", 20, 'and both are kept in X\'s outbox')
     Y.goto(url + '/index.html')
     wait(Y, "window.pchat && window.pchat.state.screen !== 'loading'", 60, 'Y is back')
     check(Y.evaluate("window.pchat.state.screen") == 'contacts', 'reloaded, Y is still itself - its chats, not "lost its key"')
@@ -450,6 +465,8 @@ def parts_before(browser, url, work, phone, relays_off, meet, peer, linked, said
               relinked: [...s.relinked].map(([p, t]) => [p.slice(0, 6), Math.round((Date.now() - t) / 1000)]),
               reach: [...s.carrier.reach].map(([p, m]) => [p.slice(0, 6), m.size]), done: s.carrier.done }); }'''), flush=True)
         print('    X rtc', X.evaluate("JSON.stringify(window.__rtc.map(r => [r.n, Math.round((Date.now() - r.t0) / 1000), r.states, r.closed]))")[:6000], flush=True)
+    wait(Y, f"{said(Y, yx)}.then(s => s.includes('waits-for-Y-WY1') && s.includes('waits-for-Y-WY2'))", 60, 'what waited reaches Y once they are linked again')
+    wait(X, "window.pchat.store.outbox().then(o => !o.some(x => x.waiting && x.seq > 0))", 60, 'and waits no more')
     X.evaluate(f"window.pchat.session.send('{xy}', 'live-again-L1')")
     wait(Y, f"{said(Y, yx)}.then(s => s.includes('live-again-L1'))", 30, 'and talk directly again')
     check(X.evaluate('window.__sockets') == [], 'X never opened a connection to a relay')

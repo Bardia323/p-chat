@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.13 (2026-10-17): a message waits; keys in at once; bands come clear
+
+- Not linked and no relay: a message is no longer refused. It is shown at
+  once (◷), kept in the outbox, and sent once the two of you are linked
+  again; what comes in meanwhile shows as ever. Files still wait for a link.
+- A key goes in the moment a finger is on it (a phone's own pressed look
+  waits to know the touch is no scroll), and comes out with a short ease.
+- Entering a screen, the bands (and the logo's stripes) come clear as a
+  tape does - smeared and their colours apart, sharp in about a sixth of a
+  second - instead of being drawn from the left. No more scan line.
+- Dark: the foot bar is a grey a shade above the background, not violet.
+
 ## v1.12 (2026-10-17): what you send shows at once
 
 - What you send is in the chat the moment you press send, waiting (◷),

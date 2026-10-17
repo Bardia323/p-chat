@@ -64,7 +64,7 @@
   --yellow: #ffc21a; --amber: #ff8f1f; --orange: #ff4f2b; --red: #d81f8a; --violet: #5b2bd8;
   --script: #ffffff; --outside: #050505; --band-ink: #121212;
   --line: rgba(243,241,236,.82); --ledge: #5b2bd8; --key-ledge: #7a0f4e;
-  --mine: #5b2bd8; --mine-ink: #ffffff; --foot: #5b2bd8; --mark: #ff4f2b;
+  --mine: #5b2bd8; --mine-ink: #ffffff; --foot: #262626; --mark: #ff4f2b;
   --label-bg: #141414; --count-ink: #121212;
   --scan: rgba(255,255,255,.035); --vignette: rgba(0,0,0,.35); --scan-blend: normal;
   --stripes: linear-gradient(var(--yellow) 0 2px, var(--amber) 2px 4px, var(--orange) 4px 6px, var(--red) 6px 8px, var(--violet) 8px 10px);
@@ -84,7 +84,7 @@
   --yellow: #ffc21a; --amber: #ff8f1f; --orange: #ff4f2b; --red: #d81f8a; --violet: #5b2bd8;
   --script: #ffffff; --outside: #050505; --band-ink: #121212;
   --line: rgba(243,241,236,.82); --ledge: #5b2bd8; --key-ledge: #7a0f4e;
-  --mine: #5b2bd8; --mine-ink: #ffffff; --foot: #5b2bd8; --mark: #ff4f2b;
+  --mine: #5b2bd8; --mine-ink: #ffffff; --foot: #262626; --mark: #ff4f2b;
   --label-bg: #141414; --count-ink: #121212;
   --scan: rgba(255,255,255,.035); --vignette: rgba(0,0,0,.35); --scan-blend: normal;
   --stripes: linear-gradient(var(--yellow) 0 2px, var(--amber) 2px 4px, var(--orange) 4px 6px, var(--red) 6px 8px, var(--violet) 8px 10px);
@@ -178,12 +178,18 @@ p { line-height: 1.45; margin: 8px 0; }
   letter-spacing: .1em; text-transform: uppercase; border-radius: 12px; box-shadow: var(--press); margin-bottom: 4px;
   transition: transform .06s, box-shadow .06s;
 }
-.btn:active { transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: var(--pressed); }
+.btn:active, .btn.down { transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: var(--pressed); }
 button.label { box-shadow: 0 0 0 2px var(--label-bg), 0 0 0 4px var(--ink), var(--press-ring); transition: transform .06s, box-shadow .06s; }
 button.label.cream { box-shadow: 0 0 0 2px var(--cream), 0 0 0 4px var(--ink), var(--press-ring); }
-button.label:active { transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: 0 0 0 2px var(--label-bg), 0 0 0 4px var(--ink), var(--pressed-ring); }
-button.label.cream:active { box-shadow: 0 0 0 2px var(--cream), 0 0 0 4px var(--ink), var(--pressed-ring); }
-.spine:active { background: var(--cream-2); }
+button.label:active, button.label.down { transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: 0 0 0 2px var(--label-bg), 0 0 0 4px var(--ink), var(--pressed-ring); }
+button.label.cream:active, button.label.cream.down { box-shadow: 0 0 0 2px var(--cream), 0 0 0 4px var(--ink), var(--pressed-ring); }
+.spine:active, .spine.down { background: var(--cream-2); }
+.choice:active, .choice.down { filter: brightness(.9); }
+/* Pressed the moment the finger is down (.down, put on at pointerdown: a
+   phone's :active waits to know it is not a scroll), in at once; only the
+   release eases. */
+.down { transition-duration: 0s !important; }
+button, .spine, .choice { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
 .btn.light { background: var(--cream); color: var(--ink); }
 .btn.warn { background: var(--red); border-color: var(--ink); color: var(--script); }
 .btn.wide { width: 100%; }
@@ -225,7 +231,7 @@ button.label.cream:active { box-shadow: 0 0 0 2px var(--cream), 0 0 0 4px var(--
 .chathead .sub { font: 600 10px/1.2 var(--sans); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-2); }
 .chathead .back { font-size: 20px; padding: 6px 6px 6px 0; }
 .chathead .label { font-size: 14px; padding: 1px 7px; border-width: 2px; box-shadow: var(--press); margin: 0 0 3px; }
-.chathead .label:active { transform: translate(var(--sink-x, 0), var(--sink, 3px)); box-shadow: var(--pressed); }
+.chathead .label:active, .chathead .label.down { transform: translate(var(--sink-x, 0), var(--sink, 3px)); box-shadow: var(--pressed); }
 /* The last message clears the composer's stripes (10 px above it) with room to spare. */
 .tape { flex: 1; overflow-y: auto; padding: 22px 12px 28px; display: flex; flex-direction: column; gap: 4px; }
 .msg { align-self: flex-start; max-width: 86%; padding: 8px 12px 7px; border-radius: 18px 18px 18px 6px; background: var(--paper);
@@ -255,7 +261,7 @@ button.label.cream:active { box-shadow: 0 0 0 2px var(--cream), 0 0 0 4px var(--
   display: grid; place-items: center; padding: 0; box-shadow: var(--press); transition: transform .06s, box-shadow .06s;
   margin-bottom: 6px; }
 .key svg { width: 20px; height: 20px; margin-left: 3px; }
-.key:active, .key.pressed { transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: var(--pressed); }
+.key:active, .key.down, .key.pressed { transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: var(--pressed); }
 .key[disabled] { background: var(--cream-2); color: var(--ink-2); }
 
 /* Banners: what must be seen. */
@@ -341,43 +347,41 @@ button.label.cream:active { box-shadow: 0 0 0 2px var(--cream), 0 0 0 4px var(--
 .logo { display: inline-flex; align-items: center; font: 400 30px/1 var(--display); letter-spacing: -.01em; color: var(--ink);
   text-shadow: 1px 0 rgba(212,56,42,.5), -1px 0 rgba(30,110,160,.35); user-select: none; -webkit-tap-highlight-color: transparent; }
 .logo .dash { display: inline-flex; flex-direction: column; width: 24px; height: 15px; margin: 5px 3px 0 4px; transform: skewX(-24deg); }
-.logo .dash i { flex: 1; display: block; transform-origin: left; animation: wipe .55s cubic-bezier(.2,.9,.2,1) both; }
-.logo .dash i:nth-child(1) { background: var(--yellow); animation-delay: .05s; }
-.logo .dash i:nth-child(2) { background: var(--amber); animation-delay: .1s; }
-.logo .dash i:nth-child(3) { background: var(--orange); animation-delay: .15s; }
-.logo .dash i:nth-child(4) { background: var(--red); animation-delay: .2s; }
-.logo .dash i:nth-child(5) { background: var(--violet); animation-delay: .25s; }
-.logo:active .dash i { animation-name: wipe-again; }
-@keyframes wipe { from { transform: scaleX(0); } to { transform: scaleX(1); } }
-@keyframes wipe-again { from { transform: scaleX(0); } to { transform: scaleX(1); } }
+.logo .dash i { flex: 1; display: block; animation: clear .3s cubic-bezier(.25,.8,.3,1) both; }
+.logo .dash i:nth-child(1) { background: var(--yellow); }
+.logo .dash i:nth-child(2) { background: var(--amber); animation-delay: .02s; }
+.logo .dash i:nth-child(3) { background: var(--orange); animation-delay: .04s; }
+.logo .dash i:nth-child(4) { background: var(--red); animation-delay: .06s; }
+.logo .dash i:nth-child(5) { background: var(--violet); animation-delay: .08s; }
+.logo:active .dash i { animation-name: clear-again; }
+@keyframes clear-again { from { opacity: .35; filter: blur(2.5px) saturate(1.9); transform: translateX(-3px); } to { opacity: 1; filter: none; transform: none; } }
 
-/* Entering a screen: in from the side it lies on, a pass of the tape's
-   tracking, the title splitting into its colours and closing. Transforms
-   and opacity only: cheap on any phone. */
+/* Entering a screen: in from the side it lies on, the title splitting into
+   its colours and closing, the bands coming clear as a tape does - smeared,
+   their colours apart, then sharp. Quick, and no more than a blur, a shift
+   and colour: cheap on any phone. */
 #app.enter > main, #app.enter > .head, #app.enter > .chathead { animation: in-right .34s cubic-bezier(.2,.8,.2,1) both; }
 #app.enter.from-left > main, #app.enter.from-left > .head, #app.enter.from-left > .chathead { animation-name: in-left; }
 #app.enter > .head { animation-duration: .28s; }
 #app.enter > .foot, #app.enter > .composer { animation: rise .38s cubic-bezier(.2,.8,.2,1) both; }
-#app.enter::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 90px; z-index: 60; pointer-events: none;
-  background: linear-gradient(transparent, rgba(255,255,255,.22) 45%, rgba(255,45,140,.12) 55%, transparent);
-  animation: track .45s linear both; }
 #app.enter .display { animation: split .45s ease-out both; }
-#app.enter .band, #app.enter .choice { animation: band-in .5s cubic-bezier(.2,.9,.2,1) both; transform-origin: left; }
-#app.enter .band:nth-child(2), #app.enter .choice:nth-child(2) { animation-delay: .05s; }
-#app.enter .band:nth-child(3), #app.enter .choice:nth-child(3) { animation-delay: .1s; }
-#app.enter .band:nth-child(4) { animation-delay: .15s; }
-#app.enter .band:nth-child(5) { animation-delay: .2s; }
-#app.enter .band:nth-child(6) { animation-delay: .25s; }
+#app.enter .band, #app.enter .choice { animation: clear .26s cubic-bezier(.25,.8,.3,1) both; }
+#app.enter .band:nth-child(2), #app.enter .choice:nth-child(2) { animation-delay: .025s; }
+#app.enter .band:nth-child(3), #app.enter .choice:nth-child(3) { animation-delay: .05s; }
+#app.enter .band:nth-child(4), #app.enter .choice:nth-child(4) { animation-delay: .075s; }
+#app.enter .band:nth-child(n+5), #app.enter .choice:nth-child(n+5) { animation-delay: .1s; }
 #app.enter .spine { animation: in-right .4s cubic-bezier(.2,.8,.2,1) both; }
 #app.enter li:nth-child(2) .spine { animation-delay: .04s; } #app.enter li:nth-child(3) .spine { animation-delay: .08s; }
 #app.enter li:nth-child(4) .spine { animation-delay: .12s; } #app.enter li:nth-child(n+5) .spine { animation-delay: .16s; }
 @keyframes in-right { from { opacity: 0; transform: translateX(28px); } to { opacity: 1; transform: none; } }
 @keyframes in-left { from { opacity: 0; transform: translateX(-28px); } to { opacity: 1; transform: none; } }
 @keyframes rise { from { opacity: 0; transform: translateY(24px); } to { opacity: 1; transform: none; } }
-@keyframes track { from { transform: translateY(-90px); opacity: 1; } to { transform: translateY(100dvh); opacity: .6; } }
 @keyframes split { 0% { text-shadow: 9px 0 rgba(212,56,42,.8), -9px 0 rgba(30,160,210,.7); } 60% { text-shadow: -2px 0 rgba(212,56,42,.6), 2px 0 rgba(30,160,210,.5); }
   100% { text-shadow: 1.2px 0 rgba(212,56,42,.55), -1.2px 0 rgba(30,110,160,.35); } }
-@keyframes band-in { from { transform: scaleX(0); } to { transform: none; } }
+@keyframes clear {
+  0% { opacity: .7; transform: translateX(-4px) scaleY(1.05); filter: blur(2px) saturate(2.2) contrast(1.3) drop-shadow(7px 0 rgba(255,30,90,.7)) drop-shadow(-7px 0 rgba(20,180,240,.65)); }
+  40% { opacity: .95; transform: translateX(1.5px); filter: blur(.7px) saturate(1.4) contrast(1.1) drop-shadow(2.5px 0 rgba(255,30,90,.35)) drop-shadow(-2.5px 0 rgba(20,180,240,.3)); }
+  100% { opacity: 1; transform: none; filter: blur(0) saturate(1) contrast(1) drop-shadow(0 0 rgba(255,30,90,0)) drop-shadow(0 0 rgba(20,180,240,0)); } }
 
 /* A new message pops from its own side; the send key fires its triangle. */
 .msg.new { animation: pop .36s cubic-bezier(.2,1.45,.4,1) both; transform-origin: bottom left; }
@@ -397,7 +401,7 @@ button.label.cream:active { box-shadow: 0 0 0 2px var(--cream), 0 0 0 4px var(--
 .banner.red { animation: shake .45s cubic-bezier(.3,.7,.4,1); }
 @keyframes shake { 0%, 100% { transform: none; } 20% { transform: translateX(-7px); } 40% { transform: translateX(6px); } 60% { transform: translateX(-4px); } 80% { transform: translateX(2px); } }
 .spine { transition: transform .12s, background .12s; }
-.spine:active { transform: translateX(6px); }
+.spine:active, .spine.down { transform: translateX(6px); }
 .composer textarea { transition: border-color .15s, box-shadow .15s; }
 .toast { animation: rise .3s cubic-bezier(.2,.8,.2,1) both; }
 
@@ -506,13 +510,13 @@ video.me { position: absolute; z-index: 2; right: 30px; top: 28px; width: 27%; m
 .tray-key { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 4px; border: 2px solid var(--line);
   border-radius: 14px; background: var(--paper); color: var(--ink); font: 700 11px/1 var(--sans); letter-spacing: .08em; text-transform: uppercase;
   box-shadow: var(--press); transition: transform .06s, box-shadow .06s; margin-bottom: 6px; }
-.tray-key:active { transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: var(--pressed); }
+.tray-key:active, .tray-key.down { transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: var(--pressed); }
 .tray-key svg { width: 22px; height: 22px; }
 .tray-key.recording { background: var(--red); color: var(--script); animation: pulse 1s ease-in-out infinite; }
 @keyframes pulse { 50% { filter: brightness(1.25); } }
 .stickers { display: grid; grid-template-columns: repeat(6, 1fr); gap: 6px; width: 100%; order: -2; padding: 4px 0; }
 .sticker-key { border: 0; background: none; padding: 2px; transition: transform .12s; }
-.sticker-key:active { transform: scale(.88); }
+.sticker-key:active, .sticker-key.down { transform: scale(.88); }
 .sticker-key img { width: 100%; display: block; }
 
 /* Groups and channels. */
@@ -597,7 +601,7 @@ main.board .swatches { margin: 0; justify-content: center; }
 .tool { min-width: 54px; height: 50px; padding: 0 14px; border: 3px solid var(--ink); border-radius: 14px; background: var(--paper); color: var(--ink);
   font: 700 15px/1 var(--sans); letter-spacing: .06em; text-transform: uppercase; box-shadow: var(--press); }
 .tool.wide { flex: 1; max-width: 160px; }
-.tool:active { transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: var(--pressed); }
+.tool:active, .tool.down { transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: var(--pressed); }
 .tool[aria-pressed=true] { background: var(--ink); color: var(--cream); transform: translate(var(--sink-x, 0), var(--sink, 4px)); box-shadow: var(--pressed); }
 /* The chat's heading: its keys in a row after the name, never wrapped under it. */
 .chathead { grid-template-columns: auto minmax(0, 1fr); grid-auto-flow: column; grid-auto-columns: auto; }
@@ -633,9 +637,9 @@ kbd { display: inline-block; min-width: 1.7em; padding: .12em .45em .08em; borde
 /* A mouse: what can be pressed says so when the pointer is on it (a key
    lifts a little; a row darkens), and the keyboard's focus is always seen. */
 @media (hover: hover) {
-  .btn:not([disabled]):hover:not(:active), .key:not([disabled]):hover:not(:active):not(.pressed), .tray-key:hover:not(:active),
+  .btn:not([disabled]):hover:not(:active):not(.down), .key:not([disabled]):hover:not(:active):not(.pressed):not(.down), .tray-key:hover:not(:active):not(.down),
   .tool:hover:not(:active):not([aria-pressed=true]), .sig:hover:not([aria-checked=true]), .pad-key:hover:not(.held),
-  button.label:hover:not(:active), .swatch:hover:not([aria-checked=true]) { transform: translateY(-1px); }
+  button.label:hover:not(:active):not(.down), .swatch:hover:not([aria-checked=true]) { transform: translateY(-1px); }
   .btn.light:not([disabled]):hover:not([aria-pressed=true]), .tool:hover:not([aria-pressed=true]), .tray-key:hover, .pad-key:hover:not(.held),
   .key.attach:not([disabled]):hover, .decks .deck:hover:not([aria-pressed=true]) { background: var(--paper); filter: brightness(1.04); }
   .btn:not(.light):not([disabled]):hover, .key:not(.attach):not(.deck):not([disabled]):hover { filter: brightness(1.12); }

@@ -458,7 +458,8 @@ export class Session {
   }
   // Whether what is said now reaches them: through a relay (it keeps what
   // waits), or over a live link to every other device of the chat. Neither:
-  // nothing is sent. Said again to the screen whenever it changes.
+  // a message waits here (◷) and goes when they are; a file is not sent.
+  // Said again to the screen whenever it changes.
   canSend(conv) {
     if (this.relayOf(conv)) return true;
     const info = this.app.info(conv);
@@ -1368,9 +1369,10 @@ export class Session {
   // ---- the UI fires and sends ----
   reachable(conv) { if (!this.canSend(conv)) throw new Error('Not linked to them, and no relay: nothing can be sent now.'); }
   // What is sent is shown at once, waiting (◷), until the App has made it
-  // (signed, numbered): then it is the message itself.
+  // (signed, numbered): then it is the message itself. Nothing to reach them
+  // now: it is made all the same and waits in the outbox, kept, until a link
+  // (or a relay) is there - what comes in meanwhile is shown as ever.
   async send(conv, text) {
-    this.reachable(conv);
     const time = Date.now();
     this.app.post(conv, text, time);
     const mine = this.unsaid.get(conv) || [];
