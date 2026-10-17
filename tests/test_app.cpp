@@ -127,6 +127,12 @@ struct Host {
                 notices.push_back(n);
             }
             for (const auto& env : app->take_live()) open(env);
+            // What came under a generation not reached yet, opened again.
+            for (auto it = later.begin(); it != later.end();) {
+                const auto st = open(*it);
+                if (st == "later") ++it;
+                else { it = later.erase(it); any = true; }
+            }
             for (auto it = waiting.begin(); it != waiting.end();) {
                 const auto& [cid, p, env] = *it;
                 const auto ids = app->conversations();
@@ -138,9 +144,11 @@ struct Host {
             if (!any) return;
         }
     }
+    std::vector<Bytes> later;
     std::string open(const Bytes& env) {
         const auto shared = x25519(secret, App::ephemeral_of(env));
         auto r = app->open(env, shared);
+        if (r.status == "later" && std::find(later.begin(), later.end(), env) == later.end()) later.push_back(env);
         if (r.status == "need_turn") {
             const auto f = random_key();
             ratchet_keys[hex(x25519_public(f))] = f;
@@ -1089,8 +1097,13 @@ int main() {
         CHECK(P.app->linked().empty() && U.app->linked().empty());
         CHECK_MSG(in(C, pc, P) && !in(C, pc, U) && in(E, pe, U) && !in(E, pe, P) && !in(Q, qp, U), "each kept its own");
         E.app->post(pe, "to the laptop", E.now);
-        everyone({&P, &U, &E});
-        CHECK(U.said(pe).back() == "to the laptop");
+        C.app->post(pc, "to the phone", C.now);
+        everyone({&P, &U, &E, &C});
+        CHECK(!U.said(pe).empty() && U.said(pe).back() == "to the laptop");
+        CHECK_MSG(!P.said(pc).empty() && P.said(pc).back() == "to the phone", "C talks with P after the split: " + P.app->describe(pc) + " | " + C.app->describe(pc));
+        P.app->post(pc, "and back", P.now);
+        everyone({&P, &C});
+        CHECK(C.said(pc).back() == "and back");
     }
     // 21. Releases: each signature an engine Observation; a member who signs
     //     two different releases as one version is equivocation, kept in

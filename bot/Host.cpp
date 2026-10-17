@@ -186,7 +186,7 @@ void Host::fetch() {
         if (!item.envelope.empty() && item.envelope[0] == 18) continue;  // a channel's posts: a bot reads none
         const auto status = open(item.envelope);
         if (std::getenv("SGCHAT_HOST_TRACE")) std::fprintf(stderr, "host %s opened %s\n", name_.c_str(), status.c_str());
-        if (status != "need_turn") relay_.del(item.mailbox, {item.handle});
+        if (status != "need_turn" && status != "later") relay_.del(item.mailbox, {item.handle});
         answer(wall_ms());
     }
 }

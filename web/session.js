@@ -135,7 +135,7 @@ export class Relay {
 export class Session {
   constructor(chat, ui) {
     Object.assign(this, { chat, ui, app: null, dev: null, relays: new Map(), conv: new Map(), busy: false, again: false,
-      media: null, timers: [], seenPosts: new Set(), config: { ice: [] }, sentLive: 0, sentMailbox: 0, queued: 0, signals: [], joined: new Set(), pinged: new Map(), pushes: [], statuses: new Map(), relinked: new Map(), opened: [], posts: new Set() });
+      media: null, timers: [], seenPosts: new Set(), later: [], config: { ice: [] }, sentLive: 0, sentMailbox: 0, queued: 0, signals: [], joined: new Set(), pinged: new Map(), pushes: [], statuses: new Map(), relinked: new Map(), opened: [], posts: new Set() });
   }
 
   // ---- starting ----
@@ -391,7 +391,16 @@ export class Session {
         }
         for (const n of this.app.takeNotices()) { any = true; await this.notice(n); }
         for (const o of this.app.takeOutgoing()) { any = true; await this.carry(o); }
-        for (const env of this.app.takeLive()) { any = true; await this.open(env); }
+        for (const env of this.app.takeLive()) {
+          any = true;
+          // Said under a generation not reached yet: kept a while, opened again.
+          if ((await this.open(env)).status === 'later') this.later.push({ env, until: Date.now() + 120e3 });
+        }
+        if (this.later.length && round === 0) {
+          const again = this.later.splice(0, 256);
+          for (const l of again)
+            if ((await this.open(l.env)).status === 'later' && Date.now() < l.until) this.later.push(l);
+        }
         for (const b of this.app.takeBlobs()) { any = true; await this.media.frame(b.peer, b.frame); }
         const heard = this.app.takeMedia();
         if (heard.length) this.calls.media(heard);
@@ -788,7 +797,7 @@ export class Session {
     shared.fill(0);
     if (r.peer && this.isLinked(r.peer)) this.heard(r.peer);
     // What came and what became of it, the last few (for looking, never for deciding).
-    this.opened.push([r.status, r.why || '']);
+    this.opened.push([r.status, r.why || '', (r.conversation || '').slice(0, 6), (r.peer || '').slice(0, 6), env[0], c.hex(env.slice(1, 5))]);
     if (this.opened.length > 64) this.opened.shift();
     await this.pump();
     return r;
@@ -811,8 +820,9 @@ export class Session {
             continue;
           }
           const r = await this.open(item.envelope);
-          // Opened and kept (or not ours to keep): the blob goes.
-          if (r.status !== 'need_turn') await relay.del(item.mailbox, [item.handle]).catch(() => {});
+          // Opened and kept (or not ours to keep): the blob goes. One said
+          // under a generation not reached yet stays, and is opened again.
+          if (r.status !== 'need_turn' && r.status !== 'later') await relay.del(item.mailbox, [item.handle]).catch(() => {});
         }
       }
       await this.trackGaps();

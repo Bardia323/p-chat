@@ -82,7 +82,10 @@ struct Notice {
 // private key of `own` (a ratchet public key, or the device's own agree key)
 // and `dh`, and open again.
 struct Opened {
-    std::string status;  // accepted, duplicate, equivocation, refused, need_turn, control, unknown
+    // accepted, duplicate, equivocation, refused, need_turn, control, unknown;
+    // later: said under the next generation, which this device has not taken
+    // up yet - the host keeps it and opens it again (its key is not used).
+    std::string status;
     std::string conversation, why;
     std::string peer;  // the device it came from, when it is one of the conversation's
     Key32 own{}, dh{};

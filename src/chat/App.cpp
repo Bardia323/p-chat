@@ -1016,6 +1016,10 @@ Opened App::open(const Bytes& envelope, const Key32& shared, const std::optional
         }
         const auto& fm = frame.message;
         const auto& o = fm.message;
+        // Said under a generation this device has not reached yet (what made
+        // it is still on its way here): opened later, its key not used now -
+        // a key used on a message refused could never open it again.
+        if (o.tick > c.generation && o.tick <= c.generation + 2) return {"later", c.hexid, "a generation this device has not reached yet"};
         const bool ratchet = c.ratchets.count(p) != 0;
         if (!accepts(e.version, ratchet)) return {"refused", c.hexid, ratchet ? "a message without the ratchet" : "no ratchet yet"};
         Key32 content_key{};
@@ -1092,9 +1096,10 @@ Opened App::sender_frame(Conversation& c, const Bytes& plain) {
         dirty_.insert(c.hexid);
         return {"waiting", c.hexid, "its sender key has not come yet"};
     }
+    const auto& o = f.message;
+    if (o.tick > c.generation && o.tick <= c.generation + 2) return {"later", c.hexid, "a generation this device has not reached yet"};
     auto chain = found->second;
     auto mk = sender_key_at(chain, f.iteration);
-    const auto& o = f.message;
     if (o.tick == c.generation) check_message(o, c.id, c.generation);
     const auto content = open_content(mk, o);
     found->second = chain;
@@ -2566,7 +2571,9 @@ std::string App::describe(const std::string& id) const {
         const auto verdict = compare(decode_history(c.run->statement.payload), c.log, c.cutoffs);
         s += verdict == Agrees::Same ? " (same)" : verdict == Agrees::Behind ? " (behind)" : " (differs)";
     }
-    s += ", early " + std::to_string(c.early.size());
+    s += ", early " + std::to_string(c.early.size()) + ", secrets";
+    for (const auto& k : c.secrets) s += " " + std::to_string(k.generation) + ":" + hex(k.key).substr(0, 4);
+    if (c.going) s += ", leaving: " + std::to_string(c.going->votes.size()) + " endorsements";
     if (c.change) {
         const auto& ch = *c.change;
         s += std::string(", change ") + (ch.add ? "add " : "remove ") + std::to_string(ch.members.size());
@@ -4155,6 +4162,9 @@ void App::apply_leave(Conversation& c, const LeaveDone& d) {
         if (was_leaving) notices_.push_back({"left", c.hexid, "", ""});
         return;
     }
+    // Told on to the others: the device that left may have no way left to
+    // reach one that takes no mail and is not linked to it now.
+    send_control(c, Control::LeaveDone, encode(d));
     // A linked device that left is not brought back into it while this link lasts.
     if (const auto* s = self_conv(); s && s->member(gone)) c.parted.insert(s->hexid + ":" + gone);
     engine_->send("contacts", {"device.revoke", devices_args(c.id, {out}, l.generation)});

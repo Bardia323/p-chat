@@ -231,7 +231,12 @@ a warning. Integrity's memory is rebuilt at start from the kept log.
 
 A recipient also checks: the frame's sender is the observation's peer, the
 observation is of this conversation and generation, the wrap opens for this
-device.
+device. A message said under the next generation (or the one after) that
+comes before what made that generation is not opened yet (protocol 11): its
+key is not used - one used on a message refused could never open it again -
+and the host keeps it (a relay's copy too) and opens it again once the
+device has taken that generation up, for up to two minutes when it came
+live.
 
 ## Frames
 
@@ -905,7 +910,9 @@ device. Control frames:
 | 18 LeaveDone | leave \| u16 n \| n x attestation \| u8 m \| m x member (the committee it makes) \| member (the one that left) | the leaving device, to every member |
 
 `LeaveDone` is taken only if it holds against the receiver's committee, at
-its generation + 1. Then, on every device: the committee is the one it
+its generation + 1; each member that takes it says it on once to the others
+(the device that left may have no way left to reach one that takes no
+mail). Then, on every device: the committee is the one it
 names (`device.revoke` in the world), the `Agreement` starts again with
 `previous = decision` at `tick` (the tail agreed: the next epoch starts
 after it), what each device said after the tail is said again under the

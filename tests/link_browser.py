@@ -95,7 +95,9 @@ def run(args, serve, launch):
                         print('    ', page.name, page.evaluate(f"""(() => {{ const s = window.pchat.session; return JSON.stringify({{
                           d: s.app.conversations().includes('{conv}') ? s.app.describe('{conv}') : 'none',
                           info: s.app.conversations().includes('{conv}') ? (({{generation, removed, left, leaving}}) => ({{generation, removed, left, leaving}}))(s.info('{conv}')) : null,
-                          linked: s.app.linked().map(p => p.slice(0, 6)), live: s.app.livePeers().map(p => p.slice(0, 6)), opened: s.opened.slice(-8) }}); }})()"""), flush=True)
+                          me: s.app.peer().slice(0, 6), linked: s.app.linked().map(p => p.slice(0, 6)), live: s.app.livePeers().map(p => p.slice(0, 6)),
+                          opened: s.opened.slice(-40), mb: s.app.mailboxes().map(m => window.pchat.session.chat.hex(m).slice(0, 8)).slice(0, 80) }}); }})()"""), flush=True)
+                        print('      outbox', page.evaluate(f"window.pchat.store.outbox().then(os => JSON.stringify(os.filter(o => o.conv === '{conv}').map(o => [o.peer.slice(0, 6), o.seq, o.control ? 'c' : 'm', o.waiting ? 'w' : '', o.live ? 'l' : '', o.relayed ? 'r' : '', window.pchat.session.chat.hex(o.env.slice(1, 5))])))"), flush=True)
                     except Exception as e:
                         print('    ', page.name, 'away', e, flush=True)
 
@@ -276,9 +278,11 @@ def run(args, serve, launch):
             wait(P, "window.pchat.session.app.linked().length === 0", 30, 'P is unlinked')
             wait(D, "window.pchat.session.app.linked().length === 0", 30, 'D is unlinked')
             E.evaluate(f"window.pchat.session.send('{pe}', 'to-the-desktop-only')")
-            wait(D, f"{said(D, pe)}.then(s => s.includes('to-the-desktop-only'))", 60, 'E talks with D')
+            if not wait(D, f"{said(D, pe)}.then(s => s.includes('to-the-desktop-only'))", 60, 'E talks with D'):
+                diag(pe, P, E, D)
             C.evaluate(f"window.pchat.session.send('{pc}', 'to-the-phone-only')")
-            wait(P, f"{said(P, pc)}.then(s => s.includes('to-the-phone-only'))", 60, 'C talks with P')
+            if not wait(P, f"{said(P, pc)}.then(s => s.includes('to-the-phone-only'))", 60, 'C talks with P'):
+                diag(pc, P, C, D)
             check(not P.evaluate(f"window.pchat.session.chats().includes('{pe}')"), 'the chat that went with D is gone from P')
 
             for page in (P, C, D, E, T):
