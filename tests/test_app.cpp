@@ -116,7 +116,10 @@ struct Host {
                         any = true;
                     }
                 }
-                if (n.kind == "history_item" && !n.key.empty()) keyed[n.conversation].push_back({observation_from(n.data), key_from(n.key)});
+                if (n.kind == "history_item" && !n.key.empty()) {
+                    keyed[n.conversation].push_back({observation_from(n.data), key_from(n.key)});
+                    kept[n.conversation].emplace_back(n.data, Bytes{}, n.time);
+                }
                 if (n.kind == "message" || n.kind == "sent") kept[n.conversation].emplace_back(n.data, n.kind == "sent" ? n.body : Bytes{}, n.time);
                 if (n.kind == "retire_key") ratchet_keys.erase(n.text);
                 if ((n.kind == "message" || n.kind == "sent") && !n.key.empty())
@@ -954,8 +957,10 @@ int main() {
             C.app->post(pc, "c" + std::to_string(i), C.now);
             Q.app->post(qp, "q" + std::to_string(i), Q.now);
         }
-        everyone({&P, &C, &Q});
-        CHECK(texts(P, pc).size() == 6 && texts(P, qp).size() == 3);
+        // Enough said for an epoch before the link: the one given checks back to it.
+        for (int i = 3; i < 50; ++i) P.app->post(pc, "p" + std::to_string(i), P.now);
+        everyone({&P, &C, &Q}, 8);
+        CHECK(texts(P, pc).size() == 53 && texts(P, qp).size() == 3 && P.heard("history", pc));
 
         // Linked: one Link invite, the six words, the same four pictures.
         CHECK(pair(P, D, InviteKind::Link, "") == "ok");
@@ -976,7 +981,8 @@ int main() {
         CHECK(D.app->name_of(pc) == P.app->name_of(pc));
         CHECK_MSG(texts(D, pc) == texts(P, pc), "what was said, given: " + std::to_string(texts(D, pc).size()));
         CHECK(texts(D, qp) == texts(P, qp));
-        CHECK(D.count("history_item", pc) == 6 && D.count("history_item", qp) == 3);
+        CHECK_MSG(D.count("history_item", pc) == 53 && D.count("history_item", qp) == 3,
+                  "history given: " + std::to_string(D.count("history_item", pc)) + " " + std::to_string(D.count("history_item", qp)));
 
         // The linked device talks in it; what is said reaches both of this person's devices.
         D.app->post(pc, "from the desktop", D.now);
@@ -1020,16 +1026,27 @@ int main() {
                   "a group's message on both: " + std::to_string(P.said(pg).size()) + " " + std::to_string(D.said(pg).size()));
         CHECK(!D.heard("warning") && !P.heard("warning"));
 
+        // Kept and read back: both carry on as they were.
+        P.reload();
+        D.reload();
+        everyone({&P, &D, &C, &Q});
+        CHECK(D.app->linked() == std::vector<std::string>{P.app->peer()} && has(D, pc) && texts(D, pc) == texts(P, pc));
+
         // D away; what it missed is lost on the way to it (the relay dropped
-        // its mail). Back, it says what it has; P gives what it lacks.
-        C.app->post(pc, "while away 1", C.now);
-        C.app->post(pc, "while away 2", C.now);
-        everyone({&P, &C});
+        // its mail), and an epoch is agreed without it. Back, it says what it
+        // has; P gives what it lacks, the epoch too.
+        for (int i = 0; i < 52; ++i) C.app->post(pc, "while away " + std::to_string(i), C.now);
+        everyone({&P, &C}, 8);
         for (const auto& m : D.app->mailboxes()) lr.mailboxes.erase(m);
         D.now += 400000;
-        everyone({&P, &D, &C}, 8);
-        CHECK_MSG(D.said(pc).size() >= 2 && D.said(pc)[D.said(pc).size() - 1].rfind("while away", 0) == 0, "filled in by the linked device");
-        CHECK(texts(D, pc) == texts(P, pc));
+        everyone({&P, &D, &C}, 10);
+        CHECK_MSG(texts(D, pc) == texts(P, pc), "filled in by the linked device: " + std::to_string(texts(D, pc).size()) + " of " +
+                                                    std::to_string(texts(P, pc).size()));
+        const auto epoch_of = [](const Host& h, const std::string& conv) {
+            const auto d = h.app->describe(conv);
+            return d.substr(d.find("last epoch"), d.find(", since") - d.find("last epoch"));
+        };
+        CHECK_MSG(epoch_of(D, pc) == epoch_of(P, pc), "the epoch caught up: " + epoch_of(D, pc) + " / " + epoch_of(P, pc));
 
         // Unlink, Keep: D leaves every chat (by handoff; P stays) and keeps a copy to read.
         D.app->unlink(UnlinkWhat::Keep);

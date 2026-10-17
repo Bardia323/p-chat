@@ -4337,8 +4337,12 @@ void App::take_have(Conversation& self, const Member& from, const Bytes& body) {
     (void)self;
     const auto p = peer_of(from.device);
     if (!sibling(p)) return;
-    // The same said again (a control frame is said again a while) is answered once in five minutes.
-    const auto digest = blake2b256(Bytes{}, body);
+    // The same said again (a control frame is said again a while) is answered
+    // once in five minutes - while this device has nothing new to give.
+    Writer state;
+    state.raw(body);
+    for (const auto& [id, c] : conversations_) state.u64(c->log.size()).u64(c->epochs.size()).u64(c->generation);
+    const auto digest = blake2b256(Bytes{}, state.data());
     auto& heard = have_heard_[p];
     if (heard.first == digest && now_ < heard.second + 300000) return;
     heard = {digest, std::max<std::uint64_t>(now_, 1)};
