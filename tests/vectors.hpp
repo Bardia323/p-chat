@@ -9,6 +9,7 @@
 #include "chat/Group.hpp"
 #include "chat/Media.hpp"
 #include "chat/Identity.hpp"
+#include "chat/Link.hpp"
 #include "chat/Message.hpp"
 #include "chat/Pairing.hpp"
 #include "chat/Ratchet.hpp"
@@ -286,6 +287,37 @@ inline Out compute() {
     put("call.buffer_map", hex(encode(BufferMap{64, 0x8000000000000001ull})));
     // Protocol 8: a stroke on a board (color 3, width 4, three points).
     put("board.stroke", hex(Writer().u8(8).u8(3).u8(4).u16(3).u16(0).u16(0).u16(1000).u16(65036).u16(32767).u16(32767).take()));
+    // Protocol 11: linked devices - a Link invite, a chat given, a device
+    // asked for, an unlink, a name, what a device has, its history given.
+    auto link = inv;
+    link.kind = InviteKind::Link;
+    put("link.invite", hex(encode(link)));
+    LinkedChat lc;
+    lc.conversation = acc.conversation;
+    lc.kind = Kind::Direct;
+    lc.side = Side::Owner;
+    lc.secret = acc.secret;
+    lc.secret_generation = 0;
+    lc.name = "Ana";
+    lc.introduced = "Ana";
+    lc.relay = "wss://relay.example/chat";
+    lc.generation = 0;
+    lc.members = acc.members;
+    lc.disappear_s = 3600;
+    put("link.chat", hex(encode(lc)));
+    put("link.device_ask", hex(encode(DeviceAsk{true, {G.device, Side::Friend, true}})));
+    put("link.unlink", hex(encode(Unlink{UnlinkWhat::SplitAsk, {acc.conversation}, {gi.group}})));
+    put("link.name", hex(encode(LinkName{acc.conversation, "Ana (work)"})));
+    LinkHave have;
+    LinkHave::Chat hc;
+    hc.conversation = acc.conversation;
+    hc.generation = 1;
+    hc.next_tick = 2;
+    hc.older = true;
+    hc.held[fid] = {{1, 7}, {9, 12}};
+    have.chats.push_back(hc);
+    put("link.have", hex(encode(have)));
+    put("link.history", hex(encode(LinkHistory{acc.conversation, {{msg, fill(0xe6)}}})));
     return out;
 }
 
