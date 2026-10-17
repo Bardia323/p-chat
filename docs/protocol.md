@@ -1,4 +1,4 @@
-# The sgchat protocol, 12
+# The sgchat protocol, 13
 
 What travels between two devices running p-chat, and what the relay sees. Every layout
 here is what `src/chat/` makes; `tests/vectors/v4.json` holds the bytes for
@@ -8,7 +8,13 @@ page and the code disagree, the vectors decide, and one of them is a bug.
 
 ## Versions
 
-**Protocol 12** (this page) changes table tennis: a player says where its
+**Protocol 13** (this page) carries within a chat over more than one
+link, with no relay, and only ever through devices of the chat's own
+members: `carry` frames 10 (`gather`), 11 (`share`) and 12 (`hop`). A
+device of protocol 12 or before refuses the three and carries as before.
+Nothing a message carries changed (content version 11).
+
+**Protocol 12** changes table tennis: a player says where its
 paddle is at the end of each step it has already played (not up or down),
 and a game is asked with `what` 3; an ask of before (0) is not taken, as
 the two courts would not be one court. Nothing a message carries changed
@@ -812,6 +818,47 @@ it:
 A relaying device's contacts learn what a relay's room would tell them: that
 a device of their own chat comes by it, and when it is linked there. It
 learns nothing a carrier does not (rooms, labels, mailbox ids, sealed boxes).
+
+**Carried within the chat (protocol 13).** Carrying above is one link
+deep: a contact passes on between two devices linked to it. Over more than
+one, things go only through devices of the chat's own members - never a
+contact who is not in it, never anyone else - on `carry`:
+
+    10 gather: u16 n (<= 1024) | n x mailbox | u16 h (<= 4096) | h x handle | u16 g (<= 4096) | g x handle
+                                                      mail for these devices of my chats? I keep the
+                                                      h already; the g were opened: drop them
+    11 share:  handle | envelope                      kept for a device of your chat; of the two
+                                                      smaller sizes only (a message, not a file's piece)
+    12 hop:    u8 left (1..4) | id(16) | room | label | long(box, 131072)
+                                                      a sealed signal for a device of this chat
+
+- *Mail.* A member knows the mailboxes of its chats' other devices that
+  take mail (`H(secret, D("sg.chat.v1.mailbox") | device_id | u32 day)`,
+  every secret kept, the days a device asks for its own); it can open none
+  of it. Each 15 s it asks every linked device to `gather` for them. The
+  other shares (at most 64 an answer, each once to a device while they are
+  linked) what it keeps for those mailboxes that the asker does not keep,
+  was not opened and was not given by the asker. A share is kept only by a
+  device whose own chat's device the mailbox is (the bounds above). The
+  device it is for asks with `ask` (5) as before; opened, it says `taken`.
+  A handle opened - taken from here, or given to this device and opened -
+  is remembered 14 days (4096 at most) and said as `g` in the gathers that
+  follow: who keeps it drops it, and it is not shared again.
+- *Signals.* A signal for a device not linked here goes to a linked device
+  that said a room of the chat as a `hop` (`left` 4, a random id), to the
+  others as `pass` (2), as before. A device that said the room and label is
+  the one: it takes it. Else, only a device in the chat (it has the room
+  itself) passes it on: to a linked device that said the room and label, as
+  `signal` (3); if none, while `left` is above 1, as a `hop` with one less
+  to every linked device that said the room, never the one it came from. An
+  id is passed on once (remembered 5 minutes, 1024 at most); at most 120 a
+  minute from one device, as `pass`. A newly linked device that said a room
+  of this device's chats is one through which the chat's devices not linked
+  here are looked for again (each at most every 30 s).
+
+A member sees, of its own chat's devices, what a carrier sees: mailbox ids,
+sealed boxes, their sizes, and that its chat's devices talk - which, being
+in the chat, it knows already.
 
 **Linking again in person (protocol 11).** A page cannot be reached: a
 device with no relay that was closed and opened again is linked with no one,

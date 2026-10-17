@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.9 (2026-10-17): carried within the chat (protocol 13)
+
+- With no relay, a message and a call's first words now go further than
+  one link: through any device of the chat's own members, a few links deep
+  - never through a contact who is not in the chat, nor anyone else. In a
+  group, a member whose phone is on keeps the messages for one whose phone
+  is off, and gives them when it comes back; members pass mail between
+  them, so whichever is around has it. Once opened, it is dropped by every
+  member that kept it.
+- Two devices of a chat that lost their link find each other again
+  through a member linked to both, or through a chain of members.
+- Only messages are passed member to member, not a file's pieces.
+- Both ends need this version for the new paths (protocol 13); an older
+  one carries as before.
+
 ## v1.8 (2026-10-17): table tennis that answers your hand (protocol 12)
 
 - Your paddle goes where your hand puts it, at once, and stays there: no

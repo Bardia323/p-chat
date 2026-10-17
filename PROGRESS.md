@@ -715,3 +715,28 @@ the host's side: hand, picture (Prediction, lead 60), when to publish.
 Paddles agreed within 0.0005 of the hand at every delay; 99% of real time
 up to 4 frames late (76% at 6, waiting rather than racing).
 
+## v1.9 Carried within the chat - done (protocol 13)
+
+Asked: devices relaying for themselves and their contacts, over more than
+one link, without strangers: hops only within a chat's members. Ideas taken
+from bitchat (permissionlesstech/bitchat) where they fit: a hop count with a
+seen-set and never back the way it came (signals, `hop`: 4 links, ids kept
+5 minutes); couriers that carry only text-sized mail (`share`: the two
+smaller sizes); summary sync instead of re-sending (a `gather` names what
+the asker keeps and what was opened, so nothing goes twice and opened mail
+is dropped everywhere). Not taken: carrying for strangers (bitchat's
+verified-peer tier), BLE mesh (no browser can advertise), Nostr (other
+people's relays). Relays have no world role (engine AGENTS.md), so this is
+carrying machinery (web/carry.js); the world is unchanged; App gives
+`member_mailboxes()` (the other devices' mailboxes of each chat).
+Checked: tests/direct_checks.mjs (a stranger's way goes nowhere, a members'
+chain of three links reaches, seen and spent hops stop, gathered mail
+given and dropped everywhere once opened, a file's pieces not gathered,
+frames), test_app (a member's mailboxes are the others', never its own).
+Not tried yet in real browsers over more than one link (the browsers link
+every member to every other when they can; a chain only forms when links
+fail).
+
+Next: a native p-chat that keeps running (PC first, then Android), which
+can be the always-on member of its owner's chats (stategine::net_ice for
+WebRTC, libdatachannel).

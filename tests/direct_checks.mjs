@@ -185,7 +185,7 @@ const m = (f) => k.read(f);
 ok(m(k.frames.rooms([roomXY])).rooms.length === 1 && m(k.frames.pass(roomXY.room, roomXY.label, rnd(9, 1))).box.length === 9 &&
   m(k.frames.ask([mailboxY])).mailboxes.length === 1 && m(k.frames.taken(mailboxY, [rnd(16, 1)])).handles.length === 1,
   'every frame reads back as made');
-ok(!m(new Uint8Array([10, 0])) && !m(k.frames.rooms([roomXY]).slice(0, -1)) && !m(k.frames.pass(roomXY.room, roomXY.label, new Uint8Array(0))) &&
+ok(!m(new Uint8Array([99, 0])) && !m(k.frames.rooms([roomXY]).slice(0, -1)) && !m(k.frames.pass(roomXY.room, roomXY.label, new Uint8Array(0))) &&
   !m(k.frames.signal(roomXY.room, new Uint8Array(k.LIMITS.box + 1))), 'a frame of no known kind, cut short, empty or too large is refused');
 const g = k.frames.given(rnd(32, 1), rnd(16, 1), e1);
 ok(!m(g), 'a kept envelope given under another mailbox than its own is refused');
@@ -250,6 +250,83 @@ ok(!m(g), 'a kept envelope given under another mailbox than its own is refused')
     'relays and serves read back as made');
   const bad = sv.slice(); bad[2 + 64 + 1] = 2;
   ok(!k.read(bad) && !k.read(new Uint8Array([8, 2])) && !k.read(new Uint8Array([8, 1, 0])) && !k.read(sv.slice(0, -1)), 'a flag or a now of no meaning, or a frame cut short, is refused');
+}
+
+// ---- carried within the chat (protocol 13) ----
+{
+  const net = { links: new Set(), queue: [], phones: {}, rooms: {}, boxes: {}, selfish: new Set(), members: {} };
+  const link2 = (a, b) => { net.links.add(a + '|' + b); net.links.add(b + '|' + a); };
+  const cut = (a, b) => { net.links.delete(a + '|' + b); net.links.delete(b + '|' + a); };
+  const flush = async () => { const out = []; while (net.queue.length) { const [to, from, f] = net.queue.shift(); out.push(await net.phones[to].frame(from, f)); } return out; };
+  let ids = 0;
+  const mk = (name) => {
+    const p = phone(name, net);
+    Object.assign(p.carry.io, { members: () => net.members[name] || [], id: () => rnd(16, 200 + ids++) });
+    return p;
+  };
+  // A group: A, M1, M2 and B are in it; O is a contact of A and of B, not in it.
+  const A = mk('a'), M1 = mk('m1'), M2 = mk('m2'), B = mk('b'), O = mk('o');
+  const g = rnd(32, 150), lab = (b) => rnd(32, b);
+  for (const [n, b] of [['a', 151], ['m1', 152], ['m2', 153], ['b', 154]]) net.rooms[n] = [{ room: g, label: lab(b) }];
+  net.rooms.o = [{ room: rnd(32, 160), label: lab(161) }];
+  const mB = rnd(32, 170);
+  for (const n of ['a', 'm1', 'm2']) net.members[n] = [mB];
+  net.boxes.b = [mB];
+  const all = ['a', 'm1', 'm2', 'b', 'o'];
+  const round = async () => { for (const p of all) await net.phones[p].tick(); await flush(); await flush(); };
+  // A stranger's way: A - O - B, O not in the chat.
+  link2('a', 'o'); link2('o', 'm2'); link2('m2', 'b');
+  await round();
+  A.carry.signal({ peer: 'b', room: g, label: lab(154), box: rnd(300, 171) });
+  ok((await flush()).includes('nowhere') && B.heard.length === 0, 'a signal goes no further than a contact who is not in the chat');
+  // A member's way: A - M1 - M2 - B.
+  cut('o', 'm2'); link2('a', 'm1'); link2('m1', 'm2');
+  await round();
+  A.carry.signal({ peer: 'b', room: g, label: lab(154), box: rnd(300, 172) });
+  let out = [];
+  for (let i = 0; i < 4; i++) out.push(...(await flush()));
+  ok(out.includes('hopped') && out.includes('passed') && B.heard.length === 1 && same(B.heard[0][1], rnd(300, 172)),
+    'through the chat\'s members, over more than one link, it reaches its device');
+  ok(await M1.carry.frame('a', k.frames.hop(4, rnd(16, 200 + ids - 1), g, lab(154), rnd(9, 1))) === 'seen', 'a hop seen already is passed on no more');
+  ok(await O.carry.frame('a', k.frames.hop(4, rnd(16, 300), g, lab(154), rnd(9, 1))) === 'refused', 'and one not of its chats is refused by a contact');
+  const end = await M2.carry.frame('m1', k.frames.hop(1, rnd(16, 301), g, lab(999 % 256), rnd(9, 1)));
+  ok(end === 'nowhere', 'a hop with no link left is passed on no more');
+  // Mail: A gives it to M1; M2 gathers it; B, back, takes it from M2.
+  cut('m2', 'b');
+  const eB = env(180); eB.set(mB, 1);
+  ok(A.carry.hold(eB, 'b') >= 1, 'an envelope for a device that is away is given to the contacts linked');
+  await flush();
+  ok(M1.kept.size === 1 && O.kept.size === 1, 'kept by those it was given to');
+  clock += 16e3;
+  await round();
+  ok(M2.kept.size === 1, 'a member gathers it from another for its chat\'s device');
+  ok(await O.carry.frame('m1', k.frames.share(handle(eB), eB)) === 'refused', 'a contact who is not in the chat takes none of its mail shared');
+  const big = env(181, 1 + 32 + 72 + 262144); big.set(mB, 1);
+  await M1.carry.frame('a', k.frames.hold(big));
+  clock += 16e3;
+  await round();
+  ok(M1.kept.size === 2 && M2.kept.size === 1, 'a file\'s pieces are not gathered, only messages');
+  cut('m1', 'm2'); link2('m2', 'b');
+  clock += 9e3;
+  await round();
+  ok(B.opened.length === 1 && same(B.opened[0], eB) && M2.kept.size === 0, 'back, the device takes it from the member that gathered it');
+  // M1 still keeps a copy: told it was opened, it drops it.
+  cut('m2', 'b'); link2('m1', 'm2');
+  clock += 16e3;
+  await round();
+  ok(M1.kept.size === 1 && !M1.kept.has(Array.from(mB, (x) => x.toString(16).padStart(2, '0')).join('') +
+    Array.from(handle(eB), (x) => x.toString(16).padStart(2, '0')).join('')), 'one opened is dropped by the other members who keep it');
+  clock += 16e3;
+  await round();
+  ok(M2.kept.size === 0, 'and not gathered again');
+  // Frames.
+  const gf = k.read(k.frames.gather([mB, g], [rnd(16, 1)], [rnd(16, 2), rnd(16, 3)]));
+  const hf = k.read(k.frames.hop(3, rnd(16, 4), g, lab(5), rnd(7, 6)));
+  ok(gf.mailboxes.length === 2 && gf.have.length === 1 && gf.gone.length === 2 && hf.left === 3 && hf.box.length === 7 &&
+    same(k.read(k.frames.share(handle(eB), eB)).envelope, eB), 'gather, share and hop read back as made');
+  ok(!k.read(k.frames.hop(5, rnd(16, 4), g, lab(5), rnd(7, 6))) && !k.read(k.frames.hop(0, rnd(16, 4), g, lab(5), rnd(7, 6))) &&
+    !k.read(k.frames.share(handle(big), big)) && !k.read(k.frames.gather([mB], [], []).slice(0, -1)),
+    'a hop with too many links or none left, a file\'s piece shared, or a gather cut short is refused');
 }
 
 if (fails.length) { console.log(`sgchat_direct: ${fails.length} failed`); process.exit(1); }

@@ -689,6 +689,21 @@ std::vector<Key32> App::mailboxes_of(const std::string& id) const {
         if (cid == id) out.push_back(m);
     return out;
 }
+std::vector<Key32> App::member_mailboxes() const {
+    std::vector<Key32> out;
+    const std::uint32_t from = day_ > mailbox_days_back ? day_ - mailbox_days_back : 0;
+    for (const auto& [id, c] : conversations_) {
+        if (c->removed || c->kind == Kind::Channel || c->secrets.empty()) continue;
+        for (const auto& m : c->members) {
+            const auto p = peer_of(m.device);
+            if (p == peer_ || !takes_mail(id, p)) continue;
+            const auto dev = device_id(m.device);
+            for (const auto& s : c->secrets)
+                for (std::uint32_t d = from; d <= day_ + 1; ++d) out.push_back(mailbox(s.key, dev, d));
+        }
+    }
+    return out;
+}
 Key32 App::mailbox_on(const std::string& id, std::uint32_t day) const { return mailbox(secret_now(conv(id)), id_, day); }
 std::pair<Key32, Key32> App::room_of(const std::string& id) const {
     const auto& c = conv(id);

@@ -644,6 +644,13 @@ public:
             return out;
         });
     }
+    val member_mailboxes() const {
+        return guard([&] {
+            val out = val::array();
+            for (const auto& m : app_->member_mailboxes()) out.call<void>("push", u8(m));
+            return out;
+        });
+    }
     val mailbox_on(std::string c, double day) const {
         return guard([&] { return u8(app_->mailbox_on(c, std::uint32_t(day))); });
     }
@@ -1002,6 +1009,7 @@ EMSCRIPTEN_BINDINGS(sgchat) {
         .function("rooms", &WebApp::rooms)
         .function("mailboxes", &WebApp::mailboxes)
         .function("mailboxesOf", &WebApp::mailboxes_of)
+        .function("memberMailboxes", &WebApp::member_mailboxes)
         .function("roomOf", &WebApp::room_of)
         .function("roomsOf", &WebApp::rooms_of)
         .function("mailboxOn", &WebApp::mailbox_on)

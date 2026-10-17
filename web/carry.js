@@ -41,15 +41,35 @@
 // for a device linked here this moment: the two can find each other again
 // through it. The contact learns what a relay's room tells: that a device
 // of their own chat comes by this one, and when. Nothing else.
+//
+// Carried within the chat (protocol 13): over more than one link, but only
+// ever through devices of the chat's own members - never a stranger's, never
+// a contact who is not in it. A member keeps mail for the other devices of
+// its chats (it knows their mailboxes; it can open none of it), gathered
+// from the contacts that hold it, and gives it when they ask; and passes on
+// a signal of its chat toward a device of it, a few links at most:
+//
+//  10 gather: u16 n | n x mailbox | u16 h | h x handle | u16 g | g x handle
+//             mail for these devices of my chats? (I keep these h; these g
+//             were opened: drop them)
+//  11 share:  handle | envelope                         kept for a device of your chat
+//  12 hop:    u8 left | id(16) | room | label | long(box, 131072)
+//             a signal for a device of this chat, passed on only by members
+//
+// What a member sees is what a carrier sees, of a chat it is in. Shared is
+// only mail of the two smaller sizes (a message, not a file's pieces). A
+// hop is passed on while `left` is above 1 (it starts at 4), once (its id
+// remembered five minutes), never back the way it came.
 
-export const KIND = { rooms: 1, pass: 2, signal: 3, hold: 4, ask: 5, given: 6, taken: 7, relays: 8, serves: 9 };
+export const KIND = { rooms: 1, pass: 2, signal: 3, hold: 4, ask: 5, given: 6, taken: 7, relays: 8, serves: 9, gather: 10, share: 11, hop: 12 };
 export const LIMITS = { rooms: 256, held: 512, heldBytes: 16 << 20, perGiver: 128, ttl: 14 * 86400e3, passPerMinute: 120,
-  holdPerMinute: 60, askIds: 1024, box: 131072, serves: 1024 };
+  holdPerMinute: 60, askIds: 1024, box: 131072, serves: 1024, handles: 4096, hops: 4, seen: 1024, sharePerGather: 64 };
 // What a device that relays takes on: a relay's share, for the few it serves.
 export const RELAYING = { ...LIMITS, held: 4096, heldBytes: 256 << 20, perGiver: 1024, passPerMinute: 600, holdPerMinute: 300 };
 export const FLAG = { relays: 1 };
 const SIZES = new Set([1024, 16384, 262144].map((b) => 1 + 32 + 72 + b));
-const ROOMS_AGAIN_MS = 60e3, ASK_EVERY_MS = 8e3;
+const SHARED = new Set([1024, 16384].map((b) => 1 + 32 + 72 + b));
+const ROOMS_AGAIN_MS = 60e3, ASK_EVERY_MS = 8e3, GATHER_EVERY_MS = 15e3, SEEN_MS = 5 * 60e3;
 // What a relaying device remembers of where a contact is reached is written
 // down again at most this often (it is read on each tick from memory).
 const SERVED_WRITE_MS = 3600e3;
@@ -122,6 +142,30 @@ export function read(frame) {
       }
       return { kind: k, devices };
     }
+    if (k === KIND.gather) {
+      const lists = [];
+      let at = 0;
+      for (const [size, max] of [[32, LIMITS.askIds], [16, LIMITS.handles], [16, LIMITS.handles]]) {
+        const n = read16(b, at);
+        if (n > max || at + 2 + n * size > b.length) return null;
+        const l = [];
+        for (let i = 0; i < n; i++) l.push(b.slice(at + 2 + i * size, at + 2 + (i + 1) * size));
+        lists.push(l);
+        at += 2 + n * size;
+      }
+      if (at !== b.length) return null;
+      return { kind: k, mailboxes: lists[0], have: lists[1], gone: lists[2] };
+    }
+    if (k === KIND.share) {
+      const e = b.subarray(16);
+      if (!envelope(e) || !SHARED.has(e.length)) return null;
+      return { kind: k, handle: b.slice(0, 16), envelope: e.slice() };
+    }
+    if (k === KIND.hop) {
+      const n = read32(b, 81);
+      if (b[0] < 1 || b[0] > LIMITS.hops || b.length !== 85 + n || n > LIMITS.box || !n) return null;
+      return { kind: k, left: b[0], id: b.slice(1, 17), room: b.slice(17, 49), label: b.slice(49, 81), box: b.slice(85) };
+    }
   } catch { /* cut short */ }
   return null;
 }
@@ -139,6 +183,10 @@ export const frames = {
   relays: (flags) => new Uint8Array([KIND.relays, flags]),
   serves: (devices) => cat(new Uint8Array([KIND.serves]), u16(devices.length),
     ...devices.flatMap((d) => [d.room, d.label, new Uint8Array([d.now ? 1 : 0])])),
+  gather: (mailboxes, have, gone) => cat(new Uint8Array([KIND.gather]), u16(mailboxes.length), ...mailboxes,
+    u16(have.length), ...have, u16(gone.length), ...gone),
+  share: (handle, env) => cat(new Uint8Array([KIND.share]), handle, env),
+  hop: (left, id, room, label, box) => cat(new Uint8Array([KIND.hop, left]), id, room, label, u32(box.length), box),
 };
 
 // One phone's carrying. `io` is what it needs of the host:
@@ -148,12 +196,20 @@ export const frames = {
 //   and for relaying (protocol 11): relaying() (this device relays),
 //   served {list(), put(item), drop(key)} (what it remembers of its contacts'
 //   rooms), near(peer, rooms) (a linked relaying contact has, this moment,
-//   devices of these rooms linked to it).
+//   devices of these rooms linked to it); and within the chat (protocol 13):
+//   members() (the mailboxes of the other devices of its chats), id() (16
+//   random bytes).
 export class Carry {
   constructor(io) {
     // What it did for others, counted (for looking, never for deciding).
     Object.assign(this, { io, reach: new Map(), told: new Map(), asked: new Map(), rates: new Map(), done: { passed: 0, held: 0, given: 0 },
-      relaying: new Map(), serving: new Map(), flagged: new Map(), servesTold: new Map(), served: null });
+      relaying: new Map(), serving: new Map(), flagged: new Map(), servesTold: new Map(), served: null,
+      // Within the chat: when each peer was last asked to gather, what was
+      // shared with it already, mail opened (by handle, to be dropped
+      // wherever it is kept), and the hops seen.
+      gathered: new Map(), shared: new Map(), gone: new Map(), seen: new Map() });
+    this.done.shared = 0;
+    this.done.hopped = 0;
   }
   limits() { return this.io.relaying?.() ? RELAYING : LIMITS; }
   // The linked contacts that say they relay.
@@ -212,7 +268,7 @@ export class Carry {
   async tick() {
     const now = this.io.now(), peers = new Set(this.io.peers());
     for (const p of [...this.reach.keys()]) if (!peers.has(p)) this.reach.delete(p);
-    for (const m of [this.told, this.relaying, this.serving, this.flagged, this.servesTold])
+    for (const m of [this.told, this.relaying, this.serving, this.flagged, this.servesTold, this.gathered, this.shared])
       for (const p of [...m.keys()]) if (!peers.has(p)) m.delete(p);
     const relaying = !!this.io.relaying?.();
     if (relaying) await this.remember(now);
@@ -224,12 +280,16 @@ export class Carry {
     const mine = this.io.rooms().slice(0, LIMITS.rooms);
     const said = mine.map((r) => hex(r.room) + hex(r.label)).join();
     const ids = this.io.mailboxes();
+    for (const [id, at] of this.seen) if (now - at > SEEN_MS) this.seen.delete(id);
+    for (const [h, at] of this.gone) if (now - at > LIMITS.ttl) this.gone.delete(h);
+    const gather = this.io.helping() && this.io.members ? await this.gathering(peers, now) : null;
     for (const p of peers) {
       // Said again when they change (a new chat, a rekey), and each minute.
       const last = this.told.get(p);
       if (!last || last.said !== said || now - last.at > ROOMS_AGAIN_MS) {
         if (this.io.send(p, frames.rooms(mine))) this.told.set(p, { at: now, said });
       }
+      if (gather) for (const f of gather.get(p) || []) this.io.send(p, f);
       if (ids.length && now - (this.asked.get(p) || 0) > ASK_EVERY_MS) {
         this.asked.set(p, now);
         for (let i = 0; i < ids.length; i += LIMITS.askIds) this.io.send(p, frames.ask(ids.slice(i, i + LIMITS.askIds)));
@@ -248,12 +308,51 @@ export class Carry {
     // Kept too long: gone.
     for (const h of await this.io.keep.list()) if (now - h.at > LIMITS.ttl) await this.io.keep.drop(h.key);
   }
+  // The gathers due (each peer every 15 s): the mailboxes of the other
+  // devices of this device's chats, what it keeps for them already, and what
+  // was opened.
+  async gathering(peers, now) {
+    const due = [...peers].filter((p) => now - (this.gathered.get(p) || 0) > GATHER_EVERY_MS);
+    if (!due.length) return null;
+    const want = this.io.members();
+    if (!want.length) return null;
+    const ids = new Set(want.map(hex));
+    const have = (await this.io.keep.list()).filter((h) => ids.has(hex(h.mailbox))).map((h) => h.handle).slice(-LIMITS.handles);
+    const gone = [...this.gone.keys()].slice(-LIMITS.handles).map(hexBytes);
+    const out = new Map();
+    for (const p of due) {
+      this.gathered.set(p, now);
+      const fs = [];
+      for (let i = 0; i < want.length; i += LIMITS.askIds)
+        fs.push(frames.gather(want.slice(i, i + LIMITS.askIds), i ? [] : have, i ? [] : gone));
+      out.set(p, fs);
+    }
+    return out;
+  }
+  // Opened here, or said opened: dropped where it is kept, and said so in
+  // the gathers that follow.
+  async opened(handles) {
+    const now = this.io.now(), gone = new Set(handles.map(hex));
+    for (const h of gone) {
+      this.gone.delete(h);
+      this.gone.set(h, now);
+    }
+    while (this.gone.size > LIMITS.handles) this.gone.delete(this.gone.keys().next().value);
+    for (const h of await this.io.keep.list()) if (gone.has(hex(h.handle))) await this.io.keep.drop(h.key);
+  }
+  // Rooms a peer said that are this device's too: the chats it is in.
+  ownRoom(room) { return this.io.rooms().some((r) => hex(r.room) === room); }
   // A signal of this phone's for `to` (a device): to it directly where they
-  // are linked, else given to every linked contact to pass on. How many took it.
+  // are linked; to a member of its chat as a hop (passed on within the chat);
+  // else given to every linked contact to pass on. How many took it.
   signal(s) {
     let n = 0;
+    const room = hex(s.room), id = this.io.id ? this.io.id() : null;
+    if (id) this.seen.set(hex(id), this.io.now());
     for (const p of this.io.peers()) {
-      const f = p === s.peer ? frames.signal(s.room, s.box) : frames.pass(s.room, s.label, s.box);
+      const member = id && [...(this.reach.get(p)?.keys() || [])].some((k) => k.startsWith(room));
+      const f = p === s.peer ? frames.signal(s.room, s.box)
+        : member ? frames.hop(LIMITS.hops, id, s.room, s.label, s.box) : frames.pass(s.room, s.label, s.box);
       if (this.io.send(p, f)) n++;
     }
     return n;
@@ -271,15 +370,32 @@ export class Carry {
     }
     return n;
   }
+  // An envelope kept for whoever asks for its mailbox, within the bounds.
+  async keep(peer, env, mailbox, handle) {
+    const L = this.limits(), list = await this.io.keep.list(), key = hex(mailbox) + hex(handle);
+    if (list.some((h) => h.key === key)) return 'ok';
+    const bytes = list.reduce((s, h) => s + h.envelope.length, 0);
+    if (list.length >= L.held || bytes + env.length > L.heldBytes ||
+      list.filter((h) => h.from === peer).length >= L.perGiver) return 'full';
+    await this.io.keep.put({ key, mailbox, handle, envelope: env, from: peer, at: this.io.now() });
+    this.done.held++;
+    return 'held';
+  }
   async frame(peer, bytes) {
     const f = read(bytes);
     if (!f) return 'refused';
     const helping = this.io.helping();
     switch (f.kind) {
       case KIND.rooms: {
-        const m = new Map();
+        const m = new Map(), fresh = !this.reach.has(peer);
         for (const r of f.rooms) m.set(hex(r.room) + hex(r.label), true);
         this.reach.set(peer, m);
+        // A member of a chat of this device's newly linked: the chat's other
+        // devices not linked here may be found again through it.
+        if (fresh && helping) {
+          const shared = [...new Set(f.rooms.map((r) => hex(r.room)))].filter((r) => this.ownRoom(r));
+          if (shared.length) this.io.near?.(peer, shared);
+        }
         return 'ok';
       }
       case KIND.pass: {
@@ -297,15 +413,7 @@ export class Carry {
       case KIND.hold: {
         const L = this.limits();
         if (!helping || !this.allowed(peer, 'hold', L.holdPerMinute)) return 'refused';
-        const list = await this.io.keep.list();
-        const mailbox = f.envelope.slice(1, 33), handle = this.io.handle(f.envelope), key = hex(mailbox) + hex(handle);
-        if (list.some((h) => h.key === key)) return 'ok';
-        const bytes = list.reduce((s, h) => s + h.envelope.length, 0);
-        if (list.length >= L.held || bytes + f.envelope.length > L.heldBytes ||
-          list.filter((h) => h.from === peer).length >= L.perGiver) return 'full';
-        await this.io.keep.put({ key, mailbox, handle, envelope: f.envelope, from: peer, at: this.io.now() });
-        this.done.held++;
-        return 'held';
+        return this.keep(peer, f.envelope, f.envelope.slice(1, 33), this.io.handle(f.envelope));
       }
       case KIND.ask: {
         if (!helping || !this.allowed(peer, 'ask', 30)) return 'refused';
@@ -320,12 +428,16 @@ export class Carry {
         // Opened (or not ours to keep): the one who kept it drops it.
         if (hex(this.io.handle(f.envelope)) !== hex(f.handle)) return 'refused';
         const status = await this.io.open(f.envelope);
-        if (status !== 'need_turn' && status !== 'later') this.io.send(peer, frames.taken(f.mailbox, [f.handle]));
+        if (status !== 'need_turn' && status !== 'later') {
+          this.io.send(peer, frames.taken(f.mailbox, [f.handle]));
+          await this.opened([f.handle]);
+        }
         return status;
       }
       case KIND.taken: {
         const gone = new Set(f.handles.map((h) => hex(f.mailbox) + hex(h)));
-        for (const h of await this.io.keep.list()) if (gone.has(h.key)) await this.io.keep.drop(h.key);
+        const kept = (await this.io.keep.list()).filter((h) => gone.has(h.key));
+        await this.opened(kept.map((h) => h.handle));
         return 'ok';
       }
       case KIND.relays: this.relaying.set(peer, f.flags); return 'ok';
@@ -337,6 +449,60 @@ export class Carry {
         const near = [...new Set(f.devices.filter((d) => d.now).map((d) => hex(d.room)))];
         if (near.length) this.io.near?.(peer, near);
         return 'ok';
+      }
+      case KIND.gather: {
+        if (!helping || !this.allowed(peer, 'gather', 12)) return 'refused';
+        await this.opened(f.gone);
+        const want = new Set(f.mailboxes.map(hex));
+        const skip = new Set([...f.have.map(hex), ...this.gone.keys()]);
+        const gave = this.shared.get(peer) || new Set();
+        this.shared.set(peer, gave);
+        let n = 0;
+        for (const h of await this.io.keep.list()) {
+          if (n >= LIMITS.sharePerGather) break;
+          const handle = hex(h.handle);
+          if (h.from === peer || !want.has(hex(h.mailbox)) || skip.has(handle) || gave.has(handle) || !SHARED.has(h.envelope.length)) continue;
+          if (!this.io.send(peer, frames.share(h.handle, h.envelope))) break;
+          gave.add(handle);
+          n++;
+        }
+        this.done.shared += n;
+        return n;
+      }
+      case KIND.share: {
+        // Kept only for a device of one of this device's own chats, and
+        // only what was not opened already.
+        if (!helping || !this.io.members || hex(this.io.handle(f.envelope)) !== hex(f.handle)) return 'refused';
+        const mailbox = f.envelope.slice(1, 33);
+        if (!this.io.members().some((m) => hex(m) === hex(mailbox))) return 'refused';
+        if (this.gone.has(hex(f.handle))) return 'gone';
+        return this.keep(peer, f.envelope, mailbox, f.handle);
+      }
+      case KIND.hop: {
+        const id = hex(f.id), room = hex(f.room), label = hex(f.label);
+        if (this.seen.has(id)) return 'seen';
+        this.seen.set(id, this.io.now());
+        while (this.seen.size > LIMITS.seen) this.seen.delete(this.seen.keys().next().value);
+        if (this.io.rooms().some((r) => hex(r.room) === room && hex(r.label) === label)) {
+          this.io.signalIn(f.room, f.box);
+          return 'ok';
+        }
+        // Passed on only by a member of the chat, only to its members.
+        if (!helping || !this.ownRoom(room) || !this.allowed(peer, 'pass', this.limits().passPerMinute)) return 'refused';
+        for (const [p, m] of this.reach) {
+          if (p === peer || !m.has(room + label)) continue;
+          if (!this.io.send(p, frames.signal(f.room, f.box))) return 'busy';
+          this.done.passed++;
+          return 'passed';
+        }
+        if (f.left <= 1) return 'nowhere';
+        let n = 0;
+        for (const [p, m] of this.reach) {
+          if (p === peer || ![...m.keys()].some((k) => k.startsWith(room))) continue;
+          if (this.io.send(p, frames.hop(f.left - 1, f.id, f.room, f.label, f.box))) n++;
+        }
+        this.done.hopped += n;
+        return n ? 'hopped' : 'nowhere';
       }
       default: return 'refused';
     }

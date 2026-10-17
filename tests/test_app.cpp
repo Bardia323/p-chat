@@ -414,6 +414,16 @@ int main() {
     everyone({&X, &Y, &Z}, 8);
     CHECK(Y.said(grp) == std::vector<std::string>{"hello club"} && Z.said(grp) == (std::vector<std::string>{"hello club", "hi all"}));
     CHECK(X.said(grp) == std::vector<std::string>{"hi all"});
+    // Carried within the chat (protocol 13): a member knows the mailboxes of
+    // the chat's other devices that take mail (Xia's), and never its own.
+    {
+        const auto kept = Y.app->member_mailboxes();
+        const std::set<Key32> theirs(kept.begin(), kept.end());
+        bool all = !X.app->mailboxes_of(grp).empty(), own = false;
+        for (const auto& m : X.app->mailboxes_of(grp)) all = all && theirs.count(m);
+        for (const auto& m : Y.app->mailboxes()) own = own || theirs.count(m);
+        CHECK_MSG(all && !own, "a member keeps for the chat's other devices, not for itself");
+    }
 
 
     // ... a fourth comes in: a majority endorses (2 of 3), and keys turn.

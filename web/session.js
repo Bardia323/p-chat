@@ -239,6 +239,8 @@ export class Session {
       relaying: () => this.relaying(),
       served: { list: () => store.served(), put: (x) => store.saveServed(x.key, x), drop: (key) => store.dropServed(key) },
       near: (peer, rooms) => this.near(peer, rooms),
+      members: () => this.memberMailboxes(),
+      id: () => crypto.getRandomValues(new Uint8Array(16)),
       now: () => Date.now(),
     });
     try { this.config = await (await fetch('config.json')).json(); } catch { /* none: no STUN/TURN */ }
@@ -509,6 +511,13 @@ export class Session {
       out.push(...this.app.mailboxesOf(id));
     }
     return out;
+  }
+  // The mailboxes of the other devices of this device's chats (what it may
+  // keep for them, protocol 13), made again each minute or when the chats change.
+  memberMailboxes() {
+    const key = this.app.conversations().join() + ':' + Math.floor(Date.now() / 60e3);
+    if (this.members?.key !== key) this.members = { key, ids: this.app.memberMailboxes() };
+    return this.members.ids;
   }
   // Signals go out in the order they were made, all at once (each a frame on
   // the one connection, answered in turn): a link's dozen candidates are not

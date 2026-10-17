@@ -233,6 +233,10 @@ public:
     std::vector<Key32> mailboxes() const;
     // The same, for one conversation (each may live on its own relay).
     std::vector<Key32> mailboxes_of(const std::string& conversation) const;
+    // The mailboxes of the other devices of this device's chats (those that
+    // take mail; no channel's): what it may keep for them, carried within the
+    // chat (protocol 13).
+    std::vector<Key32> member_mailboxes() const;
     std::pair<Key32, Key32> room_of(const std::string& conversation) const;
     // This device's mailbox in a conversation on a day (its current secret).
     Key32 mailbox_on(const std::string& conversation, std::uint32_t day) const;

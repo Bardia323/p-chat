@@ -29,7 +29,8 @@ and full pictures) and going live to a swarm; table tennis and a shared
 whiteboard; bots; and releases signed by a committee of the owner's devices,
 taken from the site or from a contact's phone, every one checked. And no
 middleman needed: pairing in person with no relay, contacts passing each
-other's signals on and keeping each other's sealed messages, relays off
+other's signals on and keeping each other's sealed messages - within a
+chat, over several links, through its own members and no one else - relays off
 altogether (Settings), any relay - the one it came with, a friend's, your own,
 or a device of yours left open ("This device relays"). Your phone and
 computer linked as one you: every chat on both, history given, kept in step,
