@@ -588,26 +588,244 @@ main.board .swatches { margin: 0; justify-content: center; }
 .chathead.callhead { grid-template-columns: 1fr; }
 main.board canvas.sheet { border-color: var(--ink); }
 
-/* A computer's wide window: the chats in a pane of their own on the left, the
-   screen on the right taking the rest; each its own sleeve, the full height. */
-#side { display: none; }
+/* ---- A computer ----
+   A wide window (900 px and more) is a desktop app: the chats in a pane of
+   their own on the left, the screen on the right taking all the rest, both
+   the window's full height; no card floating in the dark. What is read keeps
+   a readable measure; type, keys and pictures grow a step with the window
+   (--k), so a 2560 px screen is not a phone's layout stretched. */
+
+/* Keys named on screen (Enter, Esc, W, the arrows): small caps of keys, pressed in. */
+kbd { display: inline-block; min-width: 1.7em; padding: .12em .45em .08em; border: 2px solid var(--ink); border-radius: 6px; background: var(--paper);
+  color: var(--ink); font: 700 .78em/1.25 var(--sans); letter-spacing: .04em; text-align: center; box-shadow: 0 2px 0 var(--ink); vertical-align: .08em; }
+.keys-hint, .pad-key > span { display: none; }
+/* A screen split in two on a computer reads as one on a phone: no gap where it splits. */
+.split > .pad + .pad, .cols > .pad + .pad { padding-top: 0; }
+.split > .pad:has(+ .pad), .cols > .pad:has(+ .pad) { padding-bottom: 0; }
+
+/* The sleeve's foot on a page with room under it: the bands, across. */
+:root { --sleeve-h: 76px;
+  --sleeve: linear-gradient(var(--yellow) 0 16px, var(--cream) 16px 19px, var(--amber) 19px 35px, var(--cream) 35px 38px,
+    var(--orange) 38px 54px, var(--cream) 54px 57px, var(--red) 57px 76px); }
+@media (prefers-color-scheme: dark) { :root:not([data-theme=light]) {
+  --sleeve: linear-gradient(var(--yellow) 0 12px, var(--cream) 12px 15px, var(--amber) 15px 27px, var(--cream) 27px 30px, var(--orange) 30px 42px,
+    var(--cream) 42px 45px, var(--red) 45px 57px, var(--cream) 57px 60px, var(--violet) 60px 76px); } }
+:root[data-theme=dark] {
+  --sleeve: linear-gradient(var(--yellow) 0 12px, var(--cream) 12px 15px, var(--amber) 15px 27px, var(--cream) 27px 30px, var(--orange) 30px 42px,
+    var(--cream) 42px 45px, var(--red) 45px 57px, var(--cream) 57px 60px, var(--violet) 60px 76px); }
+
+/* A mouse: what can be pressed says so when the pointer is on it (a key
+   lifts a little; a row darkens), and the keyboard's focus is always seen. */
+@media (hover: hover) {
+  .btn:not([disabled]):hover:not(:active), .key:not([disabled]):hover:not(:active):not(.pressed), .tray-key:hover:not(:active),
+  .tool:hover:not(:active):not([aria-pressed=true]), .sig:hover:not([aria-checked=true]), .pad-key:hover:not(.held),
+  button.label:hover:not(:active), .swatch:hover:not([aria-checked=true]) { transform: translateY(-1px); }
+  .btn.light:not([disabled]):hover:not([aria-pressed=true]), .tool:hover:not([aria-pressed=true]), .tray-key:hover, .pad-key:hover:not(.held),
+  .key.attach:not([disabled]):hover, .decks .deck:hover:not([aria-pressed=true]) { background: var(--paper); filter: brightness(1.04); }
+  .btn:not(.light):not([disabled]):hover, .key:not(.attach):not(.deck):not([disabled]):hover { filter: brightness(1.12); }
+  .spine:hover { background: var(--cream-2); }
+  .choice:not([disabled]):hover { filter: brightness(1.07) saturate(1.05); }
+  .back:hover, details.more summary:hover { text-decoration: underline; text-underline-offset: 3px; }
+  .sticker-key:hover { transform: scale(1.08); }
+  .tile:hover { border-color: var(--yellow); }
+}
+.check, .check input, select, details.more summary, .theme button, label.field select { cursor: pointer; }
+.spine:focus-visible, .choice:focus-visible { outline-offset: -5px; }
+.btn:focus-visible, .key:focus-visible, .tool:focus-visible, .tray-key:focus-visible, .pad-key:focus-visible, .sig:focus-visible { outline-offset: 4px; }
+.composer textarea:focus-visible { outline: none; }
+
 @media (min-width: 900px) {
-  body:has(#side:not([hidden])) { display: grid; grid-template-columns: minmax(300px, 380px) minmax(0, 900px); justify-content: center;
-    height: 100dvh; overflow: hidden; }
-  #side:not([hidden]) { display: flex; flex-direction: column; position: relative; height: 100dvh; overflow: hidden; background: var(--cream);
-    border-right: 3px solid var(--ink); box-shadow: 0 30px 80px rgba(0,0,0,.45); z-index: 2; }
+  :root { --side-w: clamp(300px, 22vw, 500px); --k: 1; --gutter: clamp(24px, 2.4vw, 52px); --measure: calc(1120px * var(--k)); }
+  body { font-size: calc(16px * var(--k)); display: block; height: 100dvh; overflow: hidden; }
+  body:has(#side:not([hidden])) { display: grid; grid-template-columns: var(--side-w) minmax(0, 1fr); }
+
+  /* The chats' pane. */
+  #side:not([hidden]) { display: flex; flex-direction: column; position: relative; height: 100dvh; min-height: 0; overflow: hidden; background: var(--cream);
+    border-right: 3px solid var(--ink); z-index: 2; }
   #side > main { flex: 1; min-height: 0; overflow-y: auto; }
-  #side .head { padding-bottom: 6px; }
-  #side .side-empty { padding: 18px var(--gutter); }
-  body:has(#side:not([hidden])) #app { max-width: none; height: 100dvh; min-height: 0; }
-  body:has(#side:not([hidden])) #app > main { overflow-y: auto; }
+  #side .head { padding: calc(22px * var(--k)) var(--gutter) calc(10px * var(--k)); border-bottom: 3px solid var(--ink); }
+  #side .head::after { content: ''; position: absolute; left: 0; right: 0; top: 100%; height: 10px; background: var(--stripes); z-index: 2; pointer-events: none; }
+  #side .head .display.small { font-size: calc(46px * var(--k)); margin: calc(10px * var(--k)) 0 0; }
+  #side .logo { font-size: calc(30px * var(--k)); }
+  #side > main > .shelf { padding-top: 10px; }
+  #side .side-empty { padding: 28px var(--gutter); font-size: calc(15px * var(--k)); }
+  #side .foot { padding: calc(14px * var(--k)) var(--gutter) calc(16px * var(--k)); }
+  #side .foot > .row { gap: 10px 8px; align-items: center; }
+  #side .foot .row .row .btn { padding: calc(9px * var(--k)) calc(11px * var(--k)); font-size: calc(12.5px * var(--k)); min-height: calc(42px * var(--k)); }
+  .spine { grid-template-columns: calc(12px * var(--k)) minmax(0, 1fr) auto; gap: calc(14px * var(--k)); padding: calc(15px * var(--k)) var(--gutter) calc(15px * var(--k)) 0; }
+  .spine .name { font-size: calc(26px * var(--k)); }
+  .spine .last { max-width: none; font-size: calc(14.5px * var(--k)); }
+  .spine .flag { font-size: calc(11px * var(--k)); }
+  .count { min-width: calc(34px * var(--k)); height: calc(34px * var(--k)); font-size: calc(20px * var(--k)); line-height: calc(34px * var(--k)); }
+  /* The open chat: pressed into the shelf, its spine marked to the edge. */
+  .spine.on { background: var(--cream-2); box-shadow: inset -6px 0 0 var(--ink); }
+  .spine.on .name { text-decoration: underline 3px; text-underline-offset: 5px; text-decoration-color: var(--orange); }
+
+  /* The screen: all the rest of the window. */
+  #app { max-width: none; width: 100%; min-width: 0; height: 100dvh; min-height: 0; box-shadow: none; container: screen / inline-size; }
+  #app > main { min-height: 0; overflow-y: auto; overflow-x: hidden; }
   #app.fitted { position: relative; top: auto; left: auto; right: auto; height: 100dvh; margin: 0; }
   html.still body { position: static; }
-  .spine.on { background: var(--cream-2); }
-  .spine.on .tag { width: 14px; }
-  .empty.pick { max-width: 520px; }
-  .empty.pick .row { gap: 12px; }
-  /* A conversation read across a wide pane: lines kept to a readable length. */
-  .tape .msg { max-width: min(70%, 560px); }
+
+  /* Its head: the title large; the wordmark is the pane's. */
+  #app > .head { padding: calc(26px * var(--k)) var(--gutter) calc(12px * var(--k)); }
+  #app > .head .logo { display: none; }
+  #app > .head .back { margin: 0 0 calc(6px * var(--k)); font-size: calc(14px * var(--k)); }
+  #app > .head .display { font-size: calc(84px * var(--k)); margin: calc(6px * var(--k)) 0 calc(6px * var(--k)); }
+  #app > .head .display.small { font-size: calc(60px * var(--k)); }
+
+  /* A page (a head over it): the sleeve's bands at its foot, under what it says. */
+  #app > .head + main { padding-bottom: 0; }
+  #app > .head + main::after { content: ''; display: block; flex: none; margin-top: auto; height: var(--sleeve-h); background: var(--sleeve); }
+  #app > .head + main > :last-child { margin-bottom: calc(36px * var(--k)); }
+
+  /* Type and keys, a step larger with the window. */
+  .caps { font-size: calc(17px * var(--k)); }
+  .fine { font-size: calc(13.5px * var(--k)); }
+  .pad { padding: calc(18px * var(--k)) var(--gutter); }
+  .band { padding: calc(14px * var(--k)) var(--gutter); }
+  .pad p, .empty p, .banner p { max-width: 68ch; }
+  .btn { min-height: calc(48px * var(--k)); padding: calc(10px * var(--k)) calc(20px * var(--k)); font-size: calc(15px * var(--k)); }
+  .btn.wide { width: auto; min-width: min(100%, calc(300px * var(--k))); }
+  .label { font-size: calc(18px * var(--k)); }
+  .field { max-width: calc(640px * var(--k)); margin: calc(14px * var(--k)) 0; }
+  .field span { font-size: calc(12px * var(--k)); }
+  .field input, .field textarea, .field select { font-size: calc(17px * var(--k)); padding: calc(12px * var(--k)); }
+  .check { font-size: calc(14.5px * var(--k)); max-width: 72ch; }
+  .banner { font-size: calc(15px * var(--k)); padding: calc(14px * var(--k)) calc(18px * var(--k)); }
+  .banner b { font-size: calc(21px * var(--k)); }
+  .emoji .g { width: calc(56px * var(--k)); height: calc(56px * var(--k)); }
+  .emoji .n { font-size: calc(11.5px * var(--k)); }
+  .emoji { justify-content: flex-start; gap: calc(18px * var(--k)); }
+  .emoji { flex-wrap: wrap; }
+  .emoji div { width: auto; min-width: 0; flex: 0 1 calc(88px * var(--k)); }
+  .keys-hint { display: block; }
+  .theme .btn { min-width: calc(110px * var(--k)); }
+
+  /* Chats, with a pane beside: a welcome, room to begin, and how the keyboard works. */
+  .empty.pick, .empty.welcome { padding: calc(40px * var(--k)) var(--gutter) calc(24px * var(--k)); margin-block: auto; }
+  .empty.pick > .caps:first-child, .empty.welcome > .caps:first-child { font: 400 calc(40px * var(--k))/1.05 var(--display); text-transform: none; margin-bottom: 10px; }
+  .empty.pick .row, .empty.welcome .row { gap: 14px; margin-top: calc(22px * var(--k)); }
+  .empty .keys-hint { margin-top: calc(34px * var(--k)); font-size: calc(14px * var(--k)); line-height: 2; color: var(--ink-2); }
+
+  /* A chat: the heading across, the conversation and its composer kept to a
+     readable column in the middle of the pane (the pane itself still full). */
+  .chathead { padding: calc(12px * var(--k)) var(--gutter) calc(10px * var(--k)); gap: calc(12px * var(--k)); }
+  .chathead:has(> .back.to-list) { grid-template-columns: minmax(0, 1fr); }
   .chathead > .back.to-list { display: none; }
+  .chathead h1 { font-size: calc(30px * var(--k)); }
+  .chathead .sub { font-size: calc(11px * var(--k)); margin-top: 3px; }
+  .chathead .label { font-size: calc(15px * var(--k)); padding: calc(3px * var(--k)) calc(10px * var(--k)); }
+  .chathead .call-key { padding: calc(4px * var(--k)) calc(10px * var(--k)); }
+  .chathead .call-key svg { width: calc(20px * var(--k)); height: calc(20px * var(--k)); }
+  .chathead .back { font-size: calc(22px * var(--k)); }
+  #app.fitted > main > .banner { margin-inline: max(var(--gutter), (100% - var(--measure)) / 2); }
+  .tape { padding: calc(26px * var(--k)) max(var(--gutter), (100% - var(--measure)) / 2) calc(32px * var(--k)); gap: calc(5px * var(--k)); }
+  .tape .msg { max-width: min(72%, 36em); font-size: calc(16.5px * var(--k)); padding: calc(9px * var(--k)) calc(14px * var(--k)) calc(8px * var(--k)); }
+  .tape .msg .meta { font-size: calc(9.5px * var(--k)); }
+  .tape .msg.file { max-width: min(72%, calc(460px * var(--k))); padding: 6px; }
+  .tape .msg.sticker { padding: 0; }
+  .tape .msg.sticker .sticker-img { width: calc(140px * var(--k)); height: calc(140px * var(--k)); }
+  .day { font-size: calc(10.5px * var(--k)); }
+  .speaker { font-size: calc(11.5px * var(--k)); }
+  .composer { padding: calc(12px * var(--k)) max(var(--gutter), (100% - var(--measure)) / 2) calc(14px * var(--k)); gap: calc(12px * var(--k)); }
+  .composer textarea { font-size: calc(16.5px * var(--k)); min-height: calc(46px * var(--k)); padding: calc(11px * var(--k)) calc(18px * var(--k)); max-height: calc(200px * var(--k)); }
+  .key { width: calc(48px * var(--k)); height: calc(48px * var(--k)); }
+  .key svg { width: calc(20px * var(--k)); height: calc(20px * var(--k)); }
+  .tray { gap: 10px; }
+  .tray-key { flex: 0 0 calc(96px * var(--k)); font-size: calc(11px * var(--k)); padding: calc(10px * var(--k)) 4px; }
+  .tray-key svg { width: calc(24px * var(--k)); height: calc(24px * var(--k)); }
+  .stickers { grid-template-columns: repeat(auto-fill, minmax(calc(76px * var(--k)), 1fr)); max-height: 40vh; overflow-y: auto; }
+
+  .device { padding: calc(14px * var(--k)) calc(18px * var(--k)); }
+  .device .who { font-size: calc(22px * var(--k)); }
+  .device .id { font-size: calc(12.5px * var(--k)); }
+  .sig { width: calc(48px * var(--k)); height: calc(48px * var(--k)); }
+  .sig img.g { width: calc(28px * var(--k)); height: calc(28px * var(--k)); }
+  .choice[disabled] { opacity: .45; cursor: default; }
+  .qr { width: min(100%, calc(420px * var(--k))); }
+  .words { gap: calc(10px * var(--k)) calc(28px * var(--k)); max-width: calc(640px * var(--k)); margin: calc(18px * var(--k)) 0; }
+  .words li { font-size: calc(30px * var(--k)); }
+  .words li::before { font-size: calc(18px * var(--k)); }
+
+  /* About: its parts side by side, as many as fit. */
+  .about { display: grid; grid-template-columns: repeat(auto-fit, minmax(calc(340px * var(--k)), 1fr)); column-gap: calc(40px * var(--k)); align-items: start; }
+  .about > :not(.part) { grid-column: 1 / -1; }
+  .about .part, .about .part:first-child { padding: calc(14px * var(--k)) 0; }
+  .about .part h2 { font-size: calc(18px * var(--k)); }
+  .about .part p { font-size: calc(16px * var(--k)); }
+  .about img.g { width: calc(30px * var(--k)); height: calc(30px * var(--k)); }
+  .about > .row { margin-top: calc(12px * var(--k)); }
+  details.more summary { font-size: calc(14px * var(--k)); }
+
+  /* A new group: who is in it, in columns. */
+  .picks { display: grid; grid-template-columns: repeat(auto-fill, minmax(calc(240px * var(--k)), 1fr)); column-gap: 18px; max-width: calc(1000px * var(--k)); }
+
+  /* A call: the other side as large as the pane allows, you in its corner, the keys larger. */
+  main.call { padding: calc(18px * var(--k)) var(--gutter) calc(20px * var(--k)); }
+  video.me { right: calc(var(--gutter) + 18px); top: calc(18px * var(--k) + 16px); width: 20%; max-width: calc(260px * var(--k)); }
+  .decks { gap: calc(28px * var(--k)); padding-top: calc(18px * var(--k)); }
+  .decks .key { width: calc(64px * var(--k)); height: calc(64px * var(--k)); }
+  .decks .key svg { width: calc(28px * var(--k)); height: calc(28px * var(--k)); }
+  .decks .hang { width: calc(76px * var(--k)); height: calc(76px * var(--k)); }
+  .decks .hang svg { width: calc(34px * var(--k)); height: calc(34px * var(--k)); }
+  .decks .stats { font-size: calc(10px * var(--k)); }
+  .calling p { font-size: calc(34px * var(--k)); }
+  .calling .fine { font-size: calc(14px * var(--k)); }
+  .rings { transform: scale(var(--k)); margin-bottom: calc(20px * var(--k)); }
+
+  /* Table tennis: the court as large as fits; the keyboard's keys said under it. */
+  main.game { gap: calc(14px * var(--k)); padding: calc(18px * var(--k)) var(--gutter) calc(10px * var(--k)); }
+  main.game canvas.court { width: min(100%, calc((var(--view-h, 100dvh) - 330px * var(--k)) * 4 / 3)); }
+  main.game .fine { font-size: calc(14px * var(--k)); }
+  main.game .keys-hint kbd { font-size: calc(15px * var(--k)); }
+  .pads { justify-content: center; gap: calc(18px * var(--k)); }
+  .pad-key { flex: 0 1 calc(240px * var(--k)); height: calc(64px * var(--k)); }
+  .pad-key { display: flex; align-items: center; justify-content: center; gap: 16px; }
+  .pad-key > span { display: inline-flex; gap: 6px; font-size: calc(17px * var(--k)); }
+
+  /* The whiteboard: the sheet as large as fits; colours and tools larger. */
+  main.board { gap: calc(16px * var(--k)); padding: calc(18px * var(--k)) var(--gutter) calc(10px * var(--k)); }
+  main.board canvas.sheet { width: min(100%, calc(var(--view-h, 100dvh) - 250px * var(--k))); }
+  .swatch { width: calc(36px * var(--k)); height: calc(36px * var(--k)); }
+  .swatches { gap: calc(10px * var(--k)); }
+  .tool { height: calc(50px * var(--k)); min-width: calc(58px * var(--k)); font-size: calc(15px * var(--k)); }
+
+  /* What is said for a moment: at the foot of the screen, not under the chats. */
+  body:has(#side:not([hidden])) .toast { left: calc(var(--side-w) + var(--gutter)); right: var(--gutter); }
+  html.still .toast { bottom: calc(120px * var(--k)); }
+  .toast { max-width: calc(520px * var(--k)); font-size: calc(15px * var(--k)); padding: calc(14px * var(--k)) calc(18px * var(--k)); bottom: 28px; }
+  /* The camera reading a code: a large window on the dark. */
+  .scanner video { width: min(70vh, calc(560px * var(--k))); }
+  .scanner .caps { font-size: calc(20px * var(--k)); }
 }
+/* Two columns once the screen beside the pane has room for two (not in a 900 px window's narrow screen). */
+@media (min-width: 900px) { @container screen (min-width: 760px) {
+  /* Two columns where a screen has two kinds of thing (Devices, Settings, a code and what to do with it). */
+  .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+  .cols > .col + .col, .cols > .pad + .pad { border-left: 3px solid var(--cream-2); align-self: stretch; }
+  .cols .device:first-child { margin-top: calc(18px * var(--k)); }
+  .split { display: grid; grid-template-columns: minmax(0, 5fr) minmax(0, 7fr); align-items: stretch; }
+  .split > :first-child { border-right: 3px solid var(--cream-2); }
+  .split > .pad + .pad, .cols > .pad + .pad { padding-top: calc(18px * var(--k)); }
+  .split > .pad:has(+ .pad), .cols > .pad:has(+ .pad) { padding-bottom: calc(18px * var(--k)); }
+  .split > * > .band { height: auto; }
+  .split .pad.center { display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .split .pad.center .row { justify-content: center; }
+  /* Invite: the four ways, four tiles of the sleeve's colours. */
+  .choices { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 3px; background: var(--cream); }
+  .choices .choice { min-height: calc(160px * var(--k)); display: flex; flex-direction: column; justify-content: flex-end;
+    padding: calc(22px * var(--k)) var(--gutter); border: 0; }
+  .choices .choice .caps { font: 400 calc(30px * var(--k))/1.05 var(--display); text-transform: none; }
+  .choices .choice .caps.light { font: 600 calc(14px * var(--k))/1.3 var(--sans); text-transform: uppercase; letter-spacing: .04em; margin-top: 8px; }
+
+  /* Paired: the four pictures large beside the name. */
+  .paired { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: calc(48px * var(--k)); align-items: start; }
+  .paired > * { grid-column: 1; }
+  .paired > .emoji { grid-column: 2; grid-row: 1 / span 4; align-self: center; justify-content: center; margin: 0; }
+  .paired > .emoji .g { width: calc(104px * var(--k)); height: calc(104px * var(--k)); }
+  .paired > .emoji .n { font-size: calc(13px * var(--k)); margin-top: 6px; }
+
+} }
+@media (min-width: 1600px) { :root { --k: 1.12; } }
+@media (min-width: 2200px) { :root { --k: 1.3; } }

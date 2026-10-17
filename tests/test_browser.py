@@ -7,6 +7,10 @@ vectors: the protocol's vectors made by Wasm in the browser, and every
 Ed25519 signature and X25519 secret made by the browser's own WebCrypto,
 byte for byte against the native file.
 
+desktop: p-chat in a computer's wide window: both panes the full height,
+the chats' pane there from 900 px and gone below, the open chat marked, no
+sideways scroll, a resize across the breakpoint (tests/desktop_browser.py).
+
 e2e: two (and three) browser contexts and the local relay: pairing, live
 and mailbox messages, a wrong code, a further device, revoking, a cleared
 device, and no plaintext anywhere in the relay's memory.
@@ -94,7 +98,7 @@ window.result = await check(chat, JSON.parse(vec.vectors()), kept);
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('mode', choices=['vectors', 'e2e', 'release', 'meet'])
+    p.add_argument('mode', choices=['vectors', 'e2e', 'release', 'meet', 'desktop'])
     p.add_argument('--wasm', required=True)
     p.add_argument('--browser', default=os.environ.get('SGCHAT_BROWSER', ''))
     p.add_argument('--echo', default='', help='the native echo bot (sgchat_echo)')
@@ -104,6 +108,9 @@ def main():
     if a.mode == 'release':
         import release_browser
         sys.exit(release_browser.run(a, serve, launch))
+    if a.mode == 'desktop':
+        import desktop_browser
+        sys.exit(desktop_browser.run(a, serve, launch))
     if a.mode == 'meet':
         import meet_browser
         sys.exit(meet_browser.run(a, serve, launch))
