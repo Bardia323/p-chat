@@ -217,7 +217,8 @@ def relaying(browser, url, work, phone, relays_off, peer, linked, said, meet, re
     wait(R, linked(R, A) + ' && ' + linked(R, B), 90, 'Rue is linked with Ari and Bea')
     wait(A, linked(A, B), 90, 'Ari is linked with Bea')
     wait(A, f"window.pchat.session.carrier.relays().includes('{peer(R)}')", 30, 'Ari knows Rue\'s device relays')
-    wait(A, f"window.pchat.session.keptByRelaying('{ab}')", 30, 'and that it keeps mail for Bea\'s device')
+    wait(A, f"window.pchat.session.app.roomsOf('{ab}').some(r => window.pchat.session.carrier.servedIn(window.pchat.session.chat.hex(r.room)).size >= 1)",
+         30, 'and that it keeps mail for Bea\'s device')
     # Bea away: with no relay, Ari can still send - Rue keeps it.
     B.goto('about:blank')
     wait(A, f"!{linked(A, B)}", 60, 'Bea is away')

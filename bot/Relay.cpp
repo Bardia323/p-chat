@@ -1,11 +1,12 @@
 #include "Relay.hpp"
 
 #include <stdexcept>
+#include <utility>
 
 namespace bot {
 
 namespace {
-constexpr std::uint8_t PUT = 1, FETCH = 2, DEL = 3, PAIR_POST = 16, PAIR_FETCH = 17, PAIR_DONE = 20;
+constexpr std::uint8_t PUT = 1, FETCH = 2, DEL = 3, PAIR_POST = 16, PAIR_FETCH = 17, PAIR_DONE = 20, JOIN = 32, SIGNAL = 33;
 }
 
 Relay::Relay(std::string url) : url_(std::move(url)) {}
@@ -13,7 +14,7 @@ Relay::Relay(std::string url) : url_(std::move(url)) {}
 std::pair<int, Bytes> Relay::call(std::uint8_t op, const Bytes& body) {
     for (int attempt = 0; attempt < 2; ++attempt) {
         try {
-            if (!socket_ || !socket_->open()) socket_ = std::make_unique<Socket>(url_);
+            if (!socket_ || !socket_->open()) socket_ = std::make_unique<Socket>(url_), ++connection_;
             const auto id = next_++;
             socket_->send(chat::Writer().u8(1).u8(op).u32(id).raw(body).take());
             for (int waited = 0; waited < 20; ++waited) {
@@ -22,7 +23,8 @@ std::pair<int, Bytes> Relay::call(std::uint8_t op, const Bytes& body) {
                     if (!socket_->open()) break;
                     continue;
                 }
-                if (m->size() < 7 || (*m)[0] != 1 || (*m)[1] != (op | 0x80)) continue;  // a signal, or another answer
+                if (pushed(*m)) continue;
+                if (m->size() < 7 || (*m)[0] != 1 || (*m)[1] != (op | 0x80)) continue;  // another answer
                 chat::Reader r(*m);
                 r.u8(), r.u8();
                 if (r.u32() != id) continue;
@@ -75,6 +77,41 @@ std::vector<Bytes> Relay::pair_fetch(const chat::Token& token) {
     chat::Reader r(body);
     for (unsigned k = r.u16(); k > 0; --k) out.push_back(r.raw(r.u32()));
     return out;
+}
+
+bool Relay::pushed(const Bytes& m) {
+    if (m.size() < 6 || m[0] != 1) return false;
+    if (m[1] == 0x40) {
+        if (m.size() >= 42) {
+            chat::Reader r(m);
+            r.raw(6);
+            const auto room = r.key();
+            const auto n = r.u32();
+            if (r.left() == n) signals_.push_back({room, r.raw(n)});
+        }
+        return true;
+    }
+    if (m[1] == 0x41) {
+        mail_ = true;
+        return true;
+    }
+    return false;
+}
+
+void Relay::poll(int ms) {
+    try {
+        if (!socket_ || !socket_->open()) socket_ = std::make_unique<Socket>(url_), ++connection_;
+        for (auto m = socket_->receive(ms); m; m = socket_->receive(0)) pushed(*m);
+    } catch (const std::exception&) {
+        socket_.reset();  // made again on the next call
+    }
+}
+std::vector<std::pair<chat::Key32, Bytes>> Relay::take_signals() { return std::exchange(signals_, {}); }
+bool Relay::take_mail() { return std::exchange(mail_, false); }
+
+int Relay::join(const chat::Key32& room, const chat::Key32& label) { return call(JOIN, chat::Writer().raw(room).raw(label).take()).first; }
+int Relay::signal(const chat::Key32& room, const chat::Key32& label, const Bytes& box) {
+    return call(SIGNAL, chat::Writer().raw(room).raw(label).u32(std::uint32_t(box.size())).raw(box).take()).first;
 }
 
 int Relay::pair_done(const chat::Token& token) { return call(PAIR_DONE, chat::Writer().raw(token).take()).first; }

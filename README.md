@@ -193,6 +193,8 @@ Python; `SGCHAT_ECHO` where the browser test finds the echo bot.
 | `sgchat_lag` | protocol 11 in Chrome: how long a message takes between two browsers, live and by a relay 80 ms away, reopened and woken (live p50 5 ms, relay only 168 ms) |
 | `sgchat_desktop` | the wide layout's facts at 1280x800 and larger; the phone's layout unchanged |
 | `sgchat_link_browser` | protocol 11 in Chrome: linking a phone and a computer, every chat and its history on both, names, the linked devices screen, Keep, Forget and Split |
+| `sgchat_carry` | the native carrier against the same cases as carry.js: one link deep, kept and given, bounds, a device that relays, within the chat (protocol 13) |
+| `sgchat_node_browser` | the native device left on with two Chromes (needs `-DSGCHAT_NODE=` an ICE build's sgchat_node): linked as P's other device, brought into the chat, live with both browsers, hears C; keeps what C says while P is away (C with no relay) and gives it when P is back |
 | `sgchat_e2e` | p-chat in real browsers end to end: pairing, files, groups, a channel, disappearing messages, notifications, a call, going live, speakers through a tree, table tennis, the whiteboard, an update from a contact's phone, recovery, a bot, cleared storage, the signed bundle, the relay's memory |
 
 p-chat has a light look (the cream VHS sleeve) and a dark one (the black
@@ -355,6 +357,30 @@ others' majority, without its say) or forget the contact. `bot/Host.hpp`
 is what any other bot is built on: the App, its keys, the relay, over a
 WebSocket client of its own.
 
+## A device left on (sgchat_node)
+
+`sgchat_node` is a p-chat device with no screen that you leave running on
+a computer. It becomes one of your linked devices, so it is in every chat
+you are in. It links live with your chats' devices, phones and browsers
+alike (the engine's native WebRTC, libdatachannel). It relays for them:
+while one of them is away, it keeps their sealed messages, and it passes
+signals so two devices can find each other again. It does this only
+within your own chats, and opens nothing it keeps. It is built from its
+own folder, with native ICE:
+
+```sh
+cmake -S . -B build-ice -G Ninja -DCMAKE_BUILD_TYPE=Release -DSGCHAT_ICE=ON
+cmake --build build-ice --target sgchat_node
+./build-ice/sgchat_node ~/p-chat-node --relay wss://relay.example.org --link '<invite link>' '<six words>'
+./build-ice/sgchat_node ~/p-chat-node --relay wss://relay.example.org      # afterwards: from its folder
+```
+
+To make the invite on your phone: **Settings → Linked devices → Link a
+device**. The node needs a relay for that, and to be found again after a
+restart. Your phones need one too, to find the node after they reload: a
+page has no address of its own. Every second it prints a `STATE` line:
+its chats, who it is linked with live, and what it keeps.
+
 ## Layout
 
 ```
@@ -366,7 +392,8 @@ src/web/          the Wasm bindings (embind) and the engine's WebRTC as the live
 web/              index.html ui.js session.js store.js crypto.js media.js push.js call.js live.js release.js
                   direct.js (pairing in person) carry.js (contacts carrying) sw.js style.css
                   fonts/ emoji/ stickers/ vendor/ app.webmanifest icons
-bot/              native devices: WebSocket client, relay frames, a host that keeps its keys; the echo bot
+bot/              native devices: WebSocket client, relay frames, a host that keeps its keys, carrying
+                  (Carry, as carry.js), the live path (IceLive); the echo bot; the node (node.cpp)
 relay/relay.py    the relay; relay/worker/ the same on Cloudflare (Worker + Durable Object)
 tools/            make_vectors.cpp, release.py, icons.py
 tests/            native checks, vectors, relay, Node, browser, end to end

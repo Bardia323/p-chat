@@ -99,10 +99,11 @@ window.result = await check(chat, JSON.parse(vec.vectors()), kept);
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument('mode', choices=['vectors', 'e2e', 'release', 'meet', 'lag', 'desktop', 'link'])
+    p.add_argument('mode', choices=['vectors', 'e2e', 'release', 'meet', 'lag', 'desktop', 'link', 'node'])
     p.add_argument('--wasm', required=True)
     p.add_argument('--browser', default=os.environ.get('SGCHAT_BROWSER', ''))
     p.add_argument('--echo', default='', help='the native echo bot (sgchat_echo)')
+    p.add_argument('--node', default='', help='node: the native device left on (sgchat_node, an ICE build)')
     p.add_argument('--rtt', type=int, default=80, help='lag: the relay\'s round trip, made by a proxy (ms)')
     p.add_argument('--cases', default='', help='lag: which of live,reopen,relay (all by default)')
     p.add_argument('--trace', action='store_true', help='lag: print what the relay was asked')
@@ -122,6 +123,9 @@ def main():
     if a.mode == 'meet':
         import meet_browser
         sys.exit(meet_browser.run(a, serve, launch))
+    if a.mode == 'node':
+        import node_browser
+        sys.exit(node_browser.run(a, serve, launch))
     if a.mode == 'link':
         import link_browser
         sys.exit(link_browser.run(a, serve, launch))

@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.10 (2026-10-17): a device left on (sgchat_node)
+
+- `sgchat_node`: p-chat with no screen, for a computer left on. Link it
+  from your phone (Settings → Linked devices → Link a device). It is in
+  all your chats and links live with their phones and browsers. It relays
+  for them: while a device is away, the node keeps that device's sealed
+  messages and gives them over when it is back. Only within your own
+  chats, and it opens nothing.
+- A message is no longer refused with no relay when a linked device that
+  relays is in the chat itself: the relaying device takes its own copy
+  live and keeps the others'.
+
 ## v1.9 (2026-10-17): carried within the chat (protocol 13)
 
 - With no relay, a message and a call's first words now go further than

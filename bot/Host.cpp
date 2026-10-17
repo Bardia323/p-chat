@@ -4,11 +4,13 @@
 
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <set>
 #include <stdexcept>
 #include <thread>
 
@@ -54,6 +56,7 @@ Host::Host(std::string dir, std::string name, std::string relay_url)
     fs::create_directories(fs::path(dir_) / "ratchet");
     fs::create_directories(fs::path(dir_) / "records");
     fs::create_directories(fs::path(dir_) / "messages");
+    fs::create_directories(fs::path(dir_) / "held");
     ::chmod(dir_.c_str(), 0700);
     const auto keys = fs::path(dir_) / "device";
     auto k = read_file(keys);
@@ -87,6 +90,52 @@ Host::Host(std::string dir, std::string name, std::string relay_url)
         }
     }
     app_->start();
+    // What it keeps for others, kept across restarts.
+    std::vector<Held> kept;
+    for (const auto& e : fs::directory_iterator(fs::path(dir_) / "held")) {
+        if (e.path().extension() == ".new") continue;
+        try {
+            const auto b = read_file(e.path());
+            Reader r(b);
+            Held h;
+            h.mailbox = r.key();
+            h.handle = r.fixed<16>();
+            h.from = r.short_text(256);
+            h.at = r.u64();
+            h.envelope = r.raw(r.left());
+            h.key = hex(h.mailbox) + hex(h.handle);
+            kept.push_back(std::move(h));
+        } catch (const std::exception&) {
+            fs::remove(e.path());
+        }
+    }
+    CarryIo io;
+    io.send = [this](const std::string& peer, const Bytes& f) { return app_->send_carry(peer, f); };
+    io.peers = [this] { return live_ ? app_->live_peers() : std::vector<std::string>{}; };
+    io.rooms = [this] {
+        std::vector<Room> out;
+        for (const auto& [room, label] : app_->rooms()) out.push_back({room, label});
+        return out;
+    };
+    io.mailboxes = [this] { return app_->mailboxes(); };
+    io.members = [this] { return app_->member_mailboxes(); };
+    io.signal_in = [this](const Key32& room, const Bytes& box) { app_->signal_in(room, box); };
+    io.open = [this](const Bytes& env) { return open(env); };
+    io.near = [this](const std::string&, const std::vector<std::string>& rooms) { near(rooms); };
+    io.helping = [] { return true; };
+    io.relaying = [this] { return relaying_; };
+    io.put = [this](const Held& h) {
+        write_file(fs::path(dir_) / "held" / h.key,
+                   Writer().raw(h.mailbox).raw(h.handle).short_text(h.from).u64(h.at).raw(h.envelope).take());
+    };
+    io.drop = [this](const std::string& key) { fs::remove(fs::path(dir_) / "held" / key); };
+    io.now = [this] { return now_ ? now_ : wall_ms(); };
+    carry_ = std::make_unique<Carry>(std::move(io), std::move(kept));
+}
+
+void Host::live(App::Live* live) {
+    app_->set_live(live);
+    live_ = live != nullptr;
 }
 
 namespace {
@@ -110,6 +159,10 @@ void Host::keep(const Notice& n) {
         append_file(fs::path(dir_) / "messages" / n.conversation,
                     Writer().long_bytes(n.data, 1 << 20).long_bytes(n.kind == "sent" ? n.body : Bytes{}, 1 << 20).u64(n.time).take());
     if (n.kind == "retire_key") fs::remove(fs::path(dir_) / "ratchet" / n.text);
+    if (n.kind == "acked")
+        outbox_.erase(std::remove_if(outbox_.begin(), outbox_.end(),
+                                     [&](const Out& o) { return o.conversation == n.conversation && o.sequence == n.sequence && o.peer == n.peer; }),
+                      outbox_.end());
     if (n.kind == "removed_contact") {
         fs::remove(fs::path(dir_) / "records" / n.conversation);
         fs::remove(fs::path(dir_) / "messages" / n.conversation);
@@ -120,15 +173,134 @@ void Host::carry(const Outgoing& o) {
     if (o.kind == "envelope") {
         const auto env = encode(Envelope{o.version, o.mailbox, seal(o.purpose, o.agree, o.plain)});
         if (std::getenv("SGCHAT_HOST_TRACE")) std::fprintf(stderr, "host %s sends %s seq %llu mailbox_ok %d\n", name_.c_str(), o.purpose.c_str(), (unsigned long long)o.sequence, int(o.mailbox_ok));
-        if (o.purpose == "message" && !o.mailbox_ok) waiting_.push_back({o.conversation, o.peer, env});
-        else relay_.put(env);
+        if (!live_) {
+            if (o.purpose == "message" && !o.mailbox_ok) waiting_.push_back({o.conversation, o.peer, env});
+            else relay_.put(env);
+            return;
+        }
+        // With live links, as a browser does (web/session.js, carry): live
+        // if it can, kept until acknowledged; a control frame (no
+        // acknowledgement) kept a while and sent again.
+        const auto now = now_ ? now_ : wall_ms();
+        Out out{o.conversation, o.peer, o.sequence, 0, now, 0, env, o.mailbox_ok, o.purpose == "message" && o.sequence == 0};
+        if (out.control) out.until = now + 5 * 60000;
+        if (o.live && app_->send_live(o.peer, env)) {
+            out.live_at = now;
+            if (o.sequence > 0 || out.control) outbox_.push_back(out);
+            if (o.mailbox_ok && has_relay()) try { relay_.put(env); } catch (const std::exception&) {}
+            return;
+        }
+        if (o.purpose == "message" && !o.mailbox_ok) {
+            out.waiting = true;
+            outbox_.push_back(out);
+            return;
+        }
+        if (!has_relay()) {
+            if (o.purpose != "message") return;
+            out.waiting = true;
+            out.held = carry_->hold(env, o.peer) > 0;
+            outbox_.push_back(out);
+            return;
+        }
+        try { relay_.put(env); } catch (const std::exception&) { out.waiting = true, outbox_.push_back(out); }
     } else if (o.kind == "pair") {
         relay_.pair_post(o.token, seal(o.purpose, o.agree, o.plain));
     } else if (o.kind == "pair_done") {
         relay_.pair_done(o.token);
     } else if (o.kind == "post") {
         relay_.put(o.box);
-    }  // "signal": no live link here
+    } else if (o.kind == "signal" && live_) {
+        // Kept and sent again until taken: the other end may not be in the room yet.
+        signals_.push_back({o.peer, o.room, o.label, o.box, now_ ? now_ : wall_ms(), 0});
+        std::size_t mine = 0;
+        for (const auto& s : signals_) mine += s.peer == o.peer;
+        if (mine > 48)
+            for (auto it = signals_.begin(); it != signals_.end(); ++it)
+                if (it->peer == o.peer) { signals_.erase(it); break; }
+    }
+}
+
+// Every room of every chat joined at the relay (again on a new connection,
+// or when they change): signals for this device come to it there.
+void Host::join_rooms() {
+    if (!has_relay()) return;
+    std::string said;
+    const auto rooms = app_->rooms();
+    for (const auto& [room, label] : rooms) said += hex(room) + hex(label);
+    if (said == joined_rooms_ && joined_on_ == relay_.connection() && relay_.up()) return;
+    for (const auto& [room, label] : rooms) relay_.join(room, label);
+    joined_rooms_ = said;
+    joined_on_ = relay_.connection();
+}
+
+// A member of one of these rooms is linked here: the chats' devices not
+// linked are looked for again through it (each at most every 30 s).
+void Host::near(const std::vector<std::string>& rooms) {
+    const std::set<std::string> want(rooms.begin(), rooms.end());
+    for (const auto& id : app_->conversations()) {
+        bool in = false;
+        for (const auto& [room, label] : app_->rooms_of(id)) in = in || want.count(hex(room));
+        if (!in) continue;
+        for (const auto& m : app_->members_of(id)) {
+            const auto p = peer_of(m.device);
+            if (p == app_->peer() || app_->live_with(p) || now_ - relinked_[p] < 30000) continue;
+            relinked_[p] = now_;
+            app_->reconnect_live(p);
+        }
+    }
+}
+
+// One round of the live path: what came live opened, carry frames
+// answered, signals sent (by the relay, else carried), the outbox tried.
+void Host::go(std::uint64_t now) {
+    for (const auto& env : app_->take_live())
+        if (open(env) == "later") later_.push_back({env, now + 120000});
+    for (auto it = later_.begin(); it != later_.end();) {
+        if (open(it->envelope) != "later" || now > it->until) it = later_.erase(it);
+        else ++it;
+    }
+    for (const auto& [peer, frame] : app_->take_carry()) carry_->frame(peer, frame);
+    if (has_relay()) {
+        try {
+            relay_.poll(0);
+            join_rooms();
+            for (const auto& [room, box] : relay_.take_signals()) app_->signal_in(room, box);
+        } catch (const std::exception&) {
+        }
+    }
+    // Signals: by the relay if one takes them, else to the devices linked
+    // here to pass on (every 5 s, for 2 minutes); kept 10 minutes.
+    for (auto it = signals_.begin(); it != signals_.end();) {
+        bool taken = false;
+        if (has_relay() && relay_.up()) try { taken = relay_.signal(it->room, it->label, it->box) == 0; } catch (const std::exception&) {}
+        if (!taken && now - it->carried >= 5000 && now - it->made < 120000) {
+            it->carried = now;
+            carry_->signal(it->peer, it->room, it->label, it->box);
+        }
+        if (taken || now - it->made > 10 * 60000) it = signals_.erase(it);
+        else ++it;
+    }
+    for (auto it = outbox_.begin(); it != outbox_.end();) {
+        auto& o = *it;
+        if (o.control && now > o.until) { it = outbox_.erase(it); continue; }
+        if (o.control && o.live_at && now - o.live_at > 10000 && app_->send_live(o.peer, o.envelope)) o.live_at = now;
+        if (o.waiting && app_->send_live(o.peer, o.envelope)) o.waiting = false, o.live_at = now;
+        // No relay: given to the contacts linked here to keep, once one is.
+        if (o.waiting && o.mailbox && !o.held && !has_relay()) o.held = carry_->hold(o.envelope, o.peer) > 0;
+        // Sent live and not acknowledged: the link may say it is up and
+        // deliver nothing - it is made again, and the envelope waits.
+        if (!o.control && o.live_at && !o.waiting && now - o.live_at > 30000) {
+            if (now - relinked_[o.peer] > 30000) relinked_[o.peer] = now, app_->reconnect_live(o.peer);
+            o.waiting = true;
+        }
+        // Not acknowledged in 14 days: gone, as its copies are.
+        if (now - o.made > 14ull * 86400000ull) { it = outbox_.erase(it); continue; }
+        ++it;
+    }
+    if (now - ticked_ >= 1000) {
+        ticked_ = now;
+        carry_->tick();
+    }
 }
 
 void Host::answer(std::uint64_t now_ms) {
@@ -192,8 +364,15 @@ void Host::fetch() {
 }
 
 void Host::step(std::uint64_t now_ms) {
+    now_ = now_ms;
     answer(now_ms);
-    fetch();
+    if (live_) go(now_ms), answer(now_ms);
+    // Fetched each step with no live path (a bot's round is a second); with
+    // one, when the relay says mail waits, and every 4 s.
+    if (has_relay() && (!live_ || relay_.take_mail() || now_ms - fetched_ >= 4000)) {
+        fetched_ = now_ms;
+        fetch();
+    }
     for (auto it = waiting_.begin(); it != waiting_.end();) {
         const auto ids = app_->conversations();
         const bool known = std::find(ids.begin(), ids.end(), it->conversation) != ids.end();

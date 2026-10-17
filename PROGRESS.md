@@ -740,3 +740,41 @@ fail).
 Next: a native p-chat that keeps running (PC first, then Android), which
 can be the always-on member of its owner's chats (stategine::net_ice for
 WebRTC, libdatachannel).
+
+## v1.10 A device left on - first step done (native app, PC)
+
+`sgchat_node` (bot/node.cpp, an ICE build: -DSGCHAT_ICE=ON fetches
+libdatachannel and Mbed TLS through the engine's net_ice). What it is
+made of:
+
+- bot/IceLive: the engine's IceTransport as the App's Live, as Bindings.cpp
+  does with WebRtcTransport. The same framing, so the node and browsers
+  link with each other.
+- bot/Carry: carry.js in C++ (the same frames, bounds and answers; checked
+  by tests/test_carry.cpp on the cases of direct_checks.mjs).
+- bot/Host gains a live path: the outbox (live, kept until acknowledged;
+  controls sent again for 5 minutes), signals sent by the relay or else
+  carried, rooms joined at the relay on each connection, pushed signals
+  taken, envelopes that came live opened, and what it keeps for others
+  written to <folder>/held.
+
+The node relays (protocol 11) and carries within its chats (protocol 13).
+Checked in real Chrome (sgchat_node_browser):
+- it is linked as P's other device and brought into the chat with C;
+- it links live with both browsers, native ICE to browser WebRTC;
+- it hears C;
+- while P is away and C has no relay, it keeps C's message, then gives it
+  to P when P is back, and drops it once opened.
+Found and fixed: a browser refused to send with no relay when the relaying
+device was a member of the chat itself (it counted the relaying device as
+needing mail kept).
+
+Not yet:
+- Relays off everywhere: a reloaded page has no address, so it finds the
+  node only through a relay. Next: the node as its own relay, serving only
+  its chats' rooms and mailboxes (it knows them all), on an address the
+  phones can reach.
+- A window: the node has no screen yet.
+- Windows build: llvm-mingw is Clang/libc++, which the engine allows for
+  ICE.
+- Android.

@@ -10,10 +10,13 @@ project(sgchat LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# A messenger needs no network GPU backend and no native ICE: the browser
-# brings its own WebRTC, and the numerics are only the placeholder epoch.
+# A messenger needs no network GPU backend; the browser brings its own
+# WebRTC, and the numerics are only the placeholder epoch. Native ICE
+# (libdatachannel) only for the native device that links with browsers
+# (sgchat_node): -DSGCHAT_ICE=ON, in its own build folder.
+option(SGCHAT_ICE "Build the native device with live links (libdatachannel)" OFF)
 set(SG_NET_CUDA OFF CACHE BOOL "" FORCE)
-set(SG_NET_ICE OFF CACHE BOOL "" FORCE)
+set(SG_NET_ICE ${SGCHAT_ICE} CACHE BOOL "" FORCE)
 
 # In the browser a refusal is an exception like anywhere else: caught, not
 # an abort of the whole module (the engine sets the same for its own targets).
@@ -65,11 +68,16 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/phases.cmake OPTIONAL)
 # that keeps its own keys - what a bot is made of - and the echo bot.
 if(NOT EMSCRIPTEN)
   find_package(OpenSSL REQUIRED)
-  add_library(sgchat_host STATIC bot/Socket.cpp bot/Relay.cpp bot/Host.cpp)
+  add_library(sgchat_host STATIC bot/Socket.cpp bot/Relay.cpp bot/Host.cpp bot/Carry.cpp)
   target_include_directories(sgchat_host PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/bot)
   target_link_libraries(sgchat_host PUBLIC chat OpenSSL::SSL OpenSSL::Crypto)
   add_executable(sgchat_echo bot/echo.cpp)
   target_link_libraries(sgchat_echo PRIVATE sgchat_host)
+  # A device left on (live links, relaying): only with native ICE.
+  if(SGCHAT_ICE)
+    add_executable(sgchat_node bot/node.cpp)
+    target_link_libraries(sgchat_node PRIVATE sgchat_host stategine::net_ice)
+  endif()
 endif()
 
 if(NOT EMSCRIPTEN)
@@ -96,6 +104,10 @@ if(NOT EMSCRIPTEN)
                --worker ${CMAKE_CURRENT_SOURCE_DIR}/relay/worker)
       set_tests_properties(sgchat_relay_worker PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE)
     endif()
+    add_executable(sgchat_carry tests/test_carry.cpp)
+    target_link_libraries(sgchat_carry PRIVATE sgchat_host)
+    target_include_directories(sgchat_carry PRIVATE tests)
+    add_test(NAME sgchat_carry COMMAND sgchat_carry)
     add_executable(sgchat_bot tests/test_bot.cpp)
     target_link_libraries(sgchat_bot PRIVATE sgchat_host)
     target_include_directories(sgchat_bot PRIVATE tests)
@@ -156,5 +168,13 @@ else()
     add_test(NAME sgchat_link_browser COMMAND ${SGCHAT_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_browser.py link
              --wasm ${CMAKE_CURRENT_BINARY_DIR} --browser ${SGCHAT_BROWSER})
     set_tests_properties(sgchat_link_browser PROPERTIES TIMEOUT 900 RUN_SERIAL TRUE)
+    # The native device left on (sgchat_node, from a -DSGCHAT_ICE=ON build)
+    # with real browsers: -DSGCHAT_NODE=<that build>/sgchat_node.
+    set(SGCHAT_NODE "" CACHE FILEPATH "sgchat_node from an ICE build, for sgchat_node_browser")
+    if(SGCHAT_NODE)
+      add_test(NAME sgchat_node_browser COMMAND ${SGCHAT_PYTHON} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_browser.py node
+               --wasm ${CMAKE_CURRENT_BINARY_DIR} --browser ${SGCHAT_BROWSER} --node ${SGCHAT_NODE})
+      set_tests_properties(sgchat_node_browser PROPERTIES TIMEOUT 600 RUN_SERIAL TRUE)
+    endif()
   endif()
 endif()

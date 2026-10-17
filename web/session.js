@@ -382,8 +382,11 @@ export class Session {
     const info = this.app.info(conv);
     const others = info.members.filter((m) => !m.self);
     if (!others.length || !others.every((m) => this.app.liveWith(m.peer) || this.app.takesMail(conv, m.peer))) return false;
+    // Kept for: each device not linked here now (one linked takes it live -
+    // the relaying device itself, when it is one of the chat's own).
+    const away = others.filter((m) => !this.app.liveWith(m.peer)).length;
     const own = new Set(this.app.roomsOf(conv).map((r) => c.hex(r.label)));
-    return this.app.roomsOf(conv).some((r) => [...this.carrier.servedIn(c.hex(r.room))].filter((l) => !own.has(l)).length >= others.length);
+    return this.app.roomsOf(conv).some((r) => [...this.carrier.servedIn(c.hex(r.room))].filter((l) => !own.has(l)).length >= away);
   }
   // The name this device gives the contact whose device relays for a chat.
   relayingName(conv) {

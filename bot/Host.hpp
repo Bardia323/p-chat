@@ -1,10 +1,14 @@
 // A native device: what a browser's session does, for a program on a server
-// (a bot) or a test. Its keys are its own (Ed25519 and X25519 seeds in a
-// folder, readable by its user only); conversations, messages and ratchet
-// keys are kept beside them; it talks to the relay only - no live link, so
-// it takes mail, and what it says to a device that does not take mail
-// waits here until that device does.
+// (a bot), a device left on (sgchat_node) or a test. Its keys are its own
+// (Ed25519 and X25519 seeds in a folder, readable by its user only);
+// conversations, messages, ratchet keys and what it keeps for others are
+// kept beside them. With no live path it talks to the relay only, so it
+// takes mail, and what it says to a device that does not take mail waits
+// here until that device does. Given a live path (`live`), it links with
+// its chats' devices as a browser does, carries for them (bot/Carry) and
+// may need no relay at all (an empty relay url).
 #pragma once
+#include "Carry.hpp"
 #include "Relay.hpp"
 #include "chat/App.hpp"
 
@@ -19,6 +23,12 @@ public:
     Host(std::string dir, std::string name, std::string relay_url);
 
     chat::App& app() { return *app_; }
+    // Live links (protocol 4 on): the App's live path, and carrying on it.
+    void live(chat::App::Live* live);
+    // Whether this device relays for its contacts (protocol 11): one left on.
+    void set_relaying(bool on) { relaying_ = on; }
+    bool has_relay() const { return !relay_.url().empty(); }
+    Carry& carrier() { return *carry_; }
     Relay& relay() { return relay_; }
     std::string peer() const { return app_->peer(); }
 
@@ -53,6 +63,37 @@ private:
         Bytes envelope;
     };
     std::vector<Waiting> waiting_;  // for a device that takes no mail, until it does
+
+    // With live links: what was sent and not yet acknowledged (or not yet
+    // sent), signals until taken, envelopes said under a generation not
+    // reached yet, and the carrying.
+    void go(std::uint64_t now);
+    void join_rooms();
+    void near(const std::vector<std::string>& rooms);
+    struct Out {
+        std::string conversation, peer;
+        std::uint64_t sequence = 0, live_at = 0, made = 0, until = 0;
+        Bytes envelope;
+        bool mailbox = false, control = false, waiting = false, held = false;
+    };
+    struct Signal {
+        std::string peer;
+        chat::Key32 room{}, label{};
+        Bytes box;
+        std::uint64_t made = 0, carried = 0;
+    };
+    struct Later {
+        Bytes envelope;
+        std::uint64_t until = 0;
+    };
+    std::vector<Out> outbox_;
+    std::vector<Signal> signals_;
+    std::vector<Later> later_;
+    std::unique_ptr<Carry> carry_;
+    bool live_ = false, relaying_ = false;
+    std::uint64_t now_ = 0, ticked_ = 0, fetched_ = 0, joined_on_ = 0;
+    std::string joined_rooms_;
+    std::map<std::string, std::uint64_t> relinked_;
 };
 
 }  // namespace bot
