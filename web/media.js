@@ -69,7 +69,9 @@ async function poster(file) {
 export async function recorder() {
   const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   const type = ['audio/webm;codecs=opus', 'audio/mp4', 'audio/webm'].find((t) => MediaRecorder.isTypeSupported?.(t)) || '';
-  const rec = new MediaRecorder(stream, type ? { mimeType: type } : {});
+  // Speech, not music: Opus at 24 kbit/s (the browser's own choice is several
+  // times that); AAC (Safari's mp4) needs more to sound like a voice.
+  const rec = new MediaRecorder(stream, { ...(type ? { mimeType: type } : {}), audioBitsPerSecond: type.includes('opus') ? 24_000 : 48_000 });
   const parts = [];
   rec.ondataavailable = (e) => e.data.size && parts.push(e.data);
   const started = performance.now();

@@ -559,6 +559,13 @@ second in a stream:
             | n x H(D("sg.chat.v7.call.chunk") | chunk) | Ed25519
     signs D("sg.chat.v7.call.root") | the same fields before the signature
 
+The media is the encoder's own chunk, opaque to the protocol: a picture in
+VP9 where the streamer's browser encodes it, else VP8 (a receiver reads
+which from each key frame - a VP8 key frame's start code `9d 01 2a` at byte
+3, else VP9's frame marker - and decodes accordingly), sound in Opus (in
+the browser 20 kbit/s mono, 60 ms a chunk; silence sends nothing but
+Opus's comfort noise, DTX).
+
 Each layer of a streamer is a stream of its own: its own numbers and its
 own roots, so a listener that is not given one layer never waits on it.
 

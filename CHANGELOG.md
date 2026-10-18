@@ -1,5 +1,17 @@
 # Changelog
 
+## v1.14 (2026-10-18): calls in less
+
+- Calls send their picture in VP9 where the browser can (about a third
+  smaller for the same picture), VP8 elsewhere; each phone reads which from
+  the picture itself, so a call may mix the two. Older versions read VP8
+  only: until everyone is on this one, they see no picture from a VP9 phone.
+- Speech in a call: Opus at 20 kbit/s instead of 32, in pieces of 60 ms
+  instead of 20 (each piece sealed and signed costs more than the sound),
+  and nothing at all while no one speaks.
+- Voice notes are recorded at 24 kbit/s (Opus) instead of the browser's
+  own, several times higher.
+
 ## v1.13 (2026-10-17): a message waits; keys in at once; bands come clear
 
 - Not linked and no relay: a message is no longer refused. It is shown at

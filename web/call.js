@@ -17,6 +17,21 @@ const sized = (w, h, long) => {
   const s = Math.min(1, long / Math.max(w, h));
   return [Math.max(2, Math.round((w * s) / 2) * 2), Math.max(2, Math.round((h * s) / 2) * 2)];
 };
+// The picture's codec: VP9 where this browser encodes it (about a third
+// smaller for the same picture), VP8 elsewhere; bits a second for the full
+// and the small picture in each. Nothing on the wire says which: a receiver
+// reads it from each key frame (`codecOf`), so a call may mix the two.
+const VP8 = 'vp8', VP9 = 'vp09.00.30.08';
+const RATE = { [VP8]: [600_000, 150_000], [VP9]: [400_000, 100_000] };
+const codecOf = (b) => {
+  if (b.length > 5 && !(b[0] & 1) && b[3] === 0x9d && b[4] === 0x01 && b[5] === 0x2a) return VP8;  // a VP8 key frame's start code
+  return b.length && (b[0] & 0xc0) === 0x80 ? VP9 : null;  // VP9's frame marker
+};
+// Speech: Opus at 20 kbit/s, nothing sent while no one speaks (DTX), in
+// pieces of 60 ms - each piece sealed, numbered and named in a root costs
+// about 150 bytes, more than 20 ms of the sound itself.
+const OPUS = { codec: 'opus', sampleRate: 48000, numberOfChannels: 1, bitrate: 20_000,
+  opus: { application: 'voip', signal: 'voice', usedtx: true, frameDuration: 60_000 } };
 
 export class Calls {
   constructor(session) {
@@ -24,6 +39,18 @@ export class Calls {
       latency: [], layers: {}, ctx: null, playAt: 0, muted: false, camera: true, onchange: null });
   }
   static supported() { return 'VideoEncoder' in globalThis && 'VideoDecoder' in globalThis && !!navigator.mediaDevices?.getUserMedia; }
+  // The best picture codec this browser encodes in real time (asked once).
+  static async codec() {
+    Calls.chosen ??= VideoEncoder.isConfigSupported({ codec: VP9, width: LONG, height: 360, bitrate: RATE[VP9][0], framerate: FPS, latencyMode: 'realtime' })
+      .then((r) => (r.supported ? VP9 : VP8), () => VP8);
+    return Calls.chosen;
+  }
+  // Speech as OPUS asks where the browser takes it; elsewhere its Opus alone, lower.
+  static async sound() {
+    Calls.voice ??= AudioEncoder.isConfigSupported(OPUS).then((r) => (r.supported ? OPUS : null), () => null)
+      .then((c) => c ?? { codec: 'opus', sampleRate: 48000, numberOfChannels: 1, bitrate: 20_000 });
+    return Calls.voice;
+  }
 
   // Talk: everyone to everyone up to five devices, speakers through a small
   // tree beyond. A stream (`live`): this device to a swarm.
@@ -68,39 +95,48 @@ export class Calls {
       this.stream = await navigator.mediaDevices.getUserMedia({
         video: { width: { ideal: LONG }, height: { ideal: LONG }, frameRate: FPS, facingMode: 'user' },
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-      this.startVideo();
-      this.startAudio();
+      this.startVideo(await Calls.codec());
+      if ('AudioEncoder' in globalThis) this.startAudio(await Calls.sound());
     }
     // While a call is on, the session goes round often: roots go out, what came is played.
     this.timers.push(setInterval(() => this.s.pump(), 40));
   }
 
   // ---- saying ----
-  startVideo() {
+  startVideo(codec) {
     const track = this.stream.getVideoTracks()[0];
     if (!track) return;
     let frames = 0;
     // Through a tree, a small picture too (simulcast): listeners get it
     // unless they asked for this speaker's full one.
     const k = this.info();
-    const small = k?.mode === MODE.hybrid ? this.smallEncoder() : null;
-    const encoder = (this.video = new VideoEncoder({
+    const small = k?.mode === MODE.hybrid ? this.smallEncoder(codec) : null;
+    // Configured by the frames: a phone held upright gives an upright picture,
+    // and it is sent upright - never squeezed into a size it is not.
+    let shape = '', encoder;
+    // An encoder that fails (VP9 too slow, or taken away) closes: a VP8 one
+    // takes its place, from the next frame (a key frame).
+    const make = () => (encoder = this.video = new VideoEncoder({
       output: (chunk) => {
         const data = new Uint8Array(chunk.byteLength);
         chunk.copyTo(data);
         this.send(LAYER.full, chunk.type === 'key', data);
       },
-      error: (e) => console.error('video encoder', e),
+      error: (e) => {
+        console.error('video encoder', e);
+        if (codec === VP8 || !this.id) return;
+        codec = Calls.chosen = VP8;
+        shape = '';
+        make();
+      },
     }));
-    // Configured by the frames: a phone held upright gives an upright picture,
-    // and it is sent upright - never squeezed into a size it is not.
-    let shape = '';
+    make();
     const keyEvery = FPS * 2;
     const take = (frame) => {
       const [w, hgt] = sized(frame.displayWidth, frame.displayHeight, LONG);
       if (w + 'x' + hgt !== shape && encoder.state !== 'closed') {
         shape = w + 'x' + hgt;
-        encoder.configure({ codec: 'vp8', width: w, height: hgt, bitrate: 600_000, framerate: FPS, latencyMode: 'realtime' });
+        encoder.configure({ codec, width: w, height: hgt, bitrate: RATE[codec][0], framerate: FPS, latencyMode: 'realtime' });
         if (small) small.shape(frame.displayWidth, frame.displayHeight);
         frames = 0;  // a new shape starts at a key frame
       }
@@ -132,22 +168,31 @@ export class Calls {
       this.timers.push(setInterval(() => { if (el.readyState >= 2) take(new VideoFrame(el, { timestamp: performance.now() * 1000 })); }, 1000 / FPS));
     }
   }
-  smallEncoder() {
+  smallEncoder(codec) {
     const canvas = new OffscreenCanvas(SMALL_LONG, SMALL_LONG);
-    const encoder = new VideoEncoder({
+    const out = { canvas, ctx: canvas.getContext('2d') };
+    const configure = () => out.encoder.configure({ codec, width: canvas.width, height: canvas.height, bitrate: RATE[codec][1], framerate: FPS, latencyMode: 'realtime' });
+    // Like the full picture's: failing, it goes on in VP8.
+    const make = () => (out.encoder = this.smallVideo = new VideoEncoder({
       output: (chunk) => {
         const data = new Uint8Array(chunk.byteLength);
         chunk.copyTo(data);
         this.send(LAYER.small, chunk.type === 'key', data);
       },
-      error: (e) => console.error('small encoder', e),
-    });
-    this.smallVideo = encoder;
-    const shape = (w, hgt) => {
+      error: (e) => {
+        console.error('small encoder', e);
+        if (codec === VP8 || !this.id) return;
+        codec = VP8;
+        make();
+        configure();
+      },
+    }));
+    make();
+    out.shape = (w, hgt) => {
       [canvas.width, canvas.height] = sized(w, hgt, SMALL_LONG);
-      encoder.configure({ codec: 'vp8', width: canvas.width, height: canvas.height, bitrate: 150_000, framerate: FPS, latencyMode: 'realtime' });
+      configure();
     };
-    return { canvas, ctx: canvas.getContext('2d'), encoder, shape };
+    return out;
   }
   // A tree: whose full picture this device wants (one at a time).
   pick(speaker) {
@@ -156,18 +201,19 @@ export class Calls {
     try { this.s.app.pickFull(this.id, speaker); } catch { /* over */ }
     this.onchange?.();
   }
-  startAudio() {
+  startAudio(config) {
     const track = this.stream.getAudioTracks()[0];
-    if (!track || !('AudioEncoder' in globalThis)) return;
+    if (!track) return;
     const encoder = (this.audio = new AudioEncoder({
       output: (chunk) => {
+        if (chunk.byteLength <= 2) return;  // silence (DTX): nothing to send, as WebRTC sends nothing
         const data = new Uint8Array(chunk.byteLength);
         chunk.copyTo(data);
         this.send(LAYER.audio, true, data);
       },
       error: (e) => console.error('audio encoder', e),
     }));
-    encoder.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1, bitrate: 32000 });
+    encoder.configure(config);
     if (!('MediaStreamTrackProcessor' in globalThis)) return this.workletAudio(track, encoder);
     const reader = new MediaStreamTrackProcessor({ track }).readable.getReader();
     const pull = async () => {
@@ -219,14 +265,17 @@ export class Calls {
         continue;
       }
       // The full picture when it comes; the small one only while no full one does.
-      const dec = m.layer === LAYER.small ? r.small : r.video;
+      const which = m.layer === LAYER.small ? 'small' : 'video';
+      if (r[which].state === 'closed') r[which] = r.decoder(which === 'video');  // one that failed (a codec it lacks) is made again
+      const dec = r[which];
       if (m.layer === LAYER.small) r.lastSmall = performance.now();
       else r.lastFull = performance.now();
-      if (dec.state !== 'configured') {
-        if (!m.key) continue;  // a decoder starts at a key frame
-        dec.configure({ codec: 'vp8', optimizeForLatency: true });
-      }
-      try { dec.decode(new EncodedVideoChunk({ type: m.key ? 'key' : 'delta', timestamp: m.captured, data: m.data })); } catch { dec.reset(); }
+      // A decoder starts at a key frame, in the codec that frame is in.
+      const codec = m.key ? codecOf(m.data) : null;
+      if (codec && codec !== dec.codec) {
+        try { dec.configure({ codec, optimizeForLatency: true }); dec.codec = codec; } catch { continue; }
+      } else if (dec.state !== 'configured') continue;
+      try { dec.decode(new EncodedVideoChunk({ type: m.key ? 'key' : 'delta', timestamp: m.captured, data: m.data })); } catch { dec.reset(); dec.codec = null; }
       r.frames++;
     }
   }
@@ -246,8 +295,9 @@ export class Calls {
       }
       frame.close();
     };
-    r.video = new VideoDecoder({ output: drawer(true), error: () => {} });
-    r.small = new VideoDecoder({ output: drawer(false), error: () => {} });
+    r.decoder = (full) => new VideoDecoder({ output: drawer(full), error: () => {} });
+    r.video = r.decoder(true);
+    r.small = r.decoder(false);
     if ('AudioDecoder' in globalThis) {
       r.audio = new AudioDecoder({ output: (data) => this.play(data), error: () => {} });
       r.audio.configure({ codec: 'opus', sampleRate: 48000, numberOfChannels: 1 });
